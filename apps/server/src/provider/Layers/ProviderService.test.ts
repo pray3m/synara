@@ -1453,7 +1453,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
     }),
   );
 
-  it.effect("ignores a fired idle stop when new turn work invalidates its generation", () =>
+  it.effect("serializes a fired idle stop before starting new turn work", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
       const runtimeRepository = yield* ProviderSessionRuntimeRepository;
@@ -1470,6 +1470,18 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
         runtimeMode: "full-access",
       });
       const { resumeCursor: _omittedResumeCursor, ...staleReadySession } = session;
+
+      idleCleanup.codex.listSessions
+        .mockImplementationOnce(() => Effect.succeed([session]))
+        .mockImplementationOnce(() =>
+          Effect.promise(
+            () =>
+              new Promise<ReadonlyArray<ProviderSession>>((resolve) => {
+                listSessionsStarted = true;
+                releaseListSessions = resolve;
+              }),
+          ),
+        );
 
       yield* idleCleanup.codex.waitForRuntimeSubscribers();
       idleCleanup.codex.emit({
@@ -1501,29 +1513,23 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
         20,
         "runtime completion persistence",
       );
-      idleCleanup.codex.listSessions.mockImplementationOnce(() =>
-        Effect.promise(
-          () =>
-            new Promise<ReadonlyArray<ProviderSession>>((resolve) => {
-              listSessionsStarted = true;
-              releaseListSessions = resolve;
-            }),
-        ),
-      );
       yield* waitUntil(() => listSessionsStarted, 500, 20, "idle listSessions start");
 
-      yield* provider.sendTurn({
-        threadId,
-        input: "new turn after idle timeout fired",
-        attachments: [],
-      });
+      const sendTurnFiber = yield* provider
+        .sendTurn({
+          threadId,
+          input: "new turn after idle timeout fired",
+          attachments: [],
+        })
+        .pipe(Effect.forkChild);
 
       const release = releaseListSessions;
       assert.equal(typeof release, "function");
       release([staleReadySession]);
+      yield* Fiber.join(sendTurnFiber);
       yield* sleep(100);
 
-      assert.equal(idleCleanup.codex.stopSession.mock.calls.length, 0);
+      assert.equal(idleCleanup.codex.stopSession.mock.calls.length, 1);
       const persistedAfter = yield* runtimeRepository.getByThreadId({ threadId });
       assert.equal(Option.isSome(persistedAfter), true);
       if (Option.isSome(persistedAfter)) {
@@ -1537,6 +1543,72 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
           true,
         );
       }
+    }),
+  );
+
+  it.effect("restores idle cleanup when new turn dispatch is interrupted", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-idle-interrupted-dispatch");
+
+      idleCleanup.codex.stopSession.mockClear();
+      const session = yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      idleCleanup.codex.updateSession(threadId, (existing) => {
+        const { resumeCursor: _omittedResumeCursor, ...withoutResumeCursor } = existing;
+        return withoutResumeCursor;
+      });
+      yield* idleCleanup.codex.waitForRuntimeSubscribers();
+      idleCleanup.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("runtime-idle-before-interrupted-dispatch"),
+        provider: "codex",
+        createdAt: "2026-02-27T00:04:00.000Z",
+        threadId,
+        payload: { state: "completed" },
+      });
+
+      yield* waitUntilEffect(
+        () =>
+          runtimeRepository.getByThreadId({ threadId }).pipe(
+            Effect.map((runtime) => {
+              if (Option.isNone(runtime)) {
+                return false;
+              }
+              const payload = runtime.value.runtimePayload;
+              return (
+                payload !== null &&
+                typeof payload === "object" &&
+                !Array.isArray(payload) &&
+                (payload as Record<string, unknown>).lastRuntimeEvent === "turn.completed"
+              );
+            }),
+          ),
+        500,
+        20,
+        "runtime completion persistence",
+      );
+
+      idleCleanup.codex.sendTurn.mockImplementationOnce(() => Effect.interrupt);
+      yield* Effect.exit(
+        provider.sendTurn({
+          threadId: session.threadId,
+          input: "new turn interrupted before runtime events",
+          attachments: [],
+        }),
+      );
+
+      yield* waitUntil(
+        () => idleCleanup.codex.stopSession.mock.calls.length > 0,
+        500,
+        20,
+        "idle runtime stop after interrupted dispatch",
+      );
+      assert.deepEqual(idleCleanup.codex.stopSession.mock.calls[0]?.[0], threadId);
     }),
   );
 
