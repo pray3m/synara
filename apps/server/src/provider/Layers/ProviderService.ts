@@ -291,6 +291,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     ): Effect.Effect<A, E, R> =>
       Effect.suspend(() => {
         const existingIdleStop = runtimeIdleStopsInFlight.get(threadId);
+        const displacedIdleStop =
+          existingIdleStop !== undefined || runtimeIdleTimers.has(threadId);
         const waitForExistingIdleStop =
           existingIdleStop !== undefined
             ? Effect.promise(() => existingIdleStop)
@@ -304,7 +306,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               ? options?.scheduleIdleStopOnSuccess === true
                 ? Effect.sync(() => scheduleRuntimeIdleStop(threadId))
                 : Effect.void
-              : Effect.sync(() => scheduleRuntimeIdleStop(threadId)),
+              : displacedIdleStop
+                ? Effect.sync(() => scheduleRuntimeIdleStop(threadId))
+                : Effect.sync(() => retireRuntimeIdleGeneration(threadId)),
           ),
         );
       });
@@ -992,6 +996,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           schema: ProviderStopSessionInput,
           payload: rawInput,
         });
+        yield* waitForRuntimeIdleStop(input.threadId);
         clearRuntimeIdleTimer(input.threadId);
         const routed = yield* resolveRoutableSession({
           threadId: input.threadId,
@@ -1001,6 +1006,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         if (routed.isActive) {
           yield* routed.adapter.stopSession(routed.threadId);
         }
+        yield* waitForRuntimeIdleStop(input.threadId);
         yield* directory.remove(input.threadId);
         retireRuntimeIdleGeneration(input.threadId);
         yield* analytics.record("provider.session.stopped", {
@@ -1082,7 +1088,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         const adapter = yield* registry.getByProvider(binding.provider);
         const sessions = yield* adapter.listSessions();
         const session = sessions.find((entry) => entry.threadId === threadId);
-        if (!session || session.status !== "ready" || session.activeTurnId !== undefined) {
+        const bindingRuntimePayload = runtimePayloadRecord(binding.runtimePayload);
+        const isIdleReadySession =
+          session?.status === "ready" ||
+          (session?.status === "running" &&
+            session.activeTurnId === undefined &&
+            bindingRuntimePayload.lastRuntimeEvent === "provider.compactThread");
+        if (!session || !isIdleReadySession || session.activeTurnId !== undefined) {
           return;
         }
         // Live adapter snapshots can temporarily omit cursors even though the
@@ -1246,6 +1258,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               );
             }
             yield* routed.adapter.compactThread(routed.threadId);
+            yield* directory.upsert({
+              threadId: input.threadId,
+              provider: routed.adapter.provider,
+              status: "stopped",
+              runtimePayload: {
+                activeTurnId: null,
+                lastRuntimeEvent: "provider.compactThread",
+                lastRuntimeEventAt: new Date().toISOString(),
+              },
+            });
             yield* analytics.record("provider.thread.compacted", {
               provider: routed.adapter.provider,
             });

@@ -168,6 +168,10 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
       Effect.succeed({ threadId, turns: [] }),
   );
 
+  const compactThread = vi.fn((_threadId: ThreadId): Effect.Effect<void, ProviderAdapterError> =>
+    Effect.void,
+  );
+
   const stopAll = vi.fn(
     (): Effect.Effect<void, ProviderAdapterError> =>
       Effect.sync(() => {
@@ -190,6 +194,7 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
     hasSession,
     readThread,
     rollbackThread,
+    compactThread,
     stopAll,
     streamEvents: Stream.fromPubSub(runtimeEventPubSub),
   };
@@ -232,6 +237,7 @@ function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
     hasSession,
     readThread,
     rollbackThread,
+    compactThread,
     stopAll,
   };
 }
@@ -1669,6 +1675,109 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
         500,
         20,
         "idle runtime stop after successful rollback",
+      );
+      assert.deepEqual(idleCleanup.codex.stopSession.mock.calls[0]?.[0], threadId);
+    }),
+  );
+
+  it.effect("waits for fired idle cleanup before removing an explicit stop binding", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const directory = yield* ProviderSessionDirectory;
+      const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-idle-stop-remove-race");
+      let listSessionsStarted = false;
+      let releaseListSessions:
+        | ((sessions: ReadonlyArray<ProviderSession>) => void)
+        | undefined;
+
+      const session = yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      const { resumeCursor: _omittedResumeCursor, ...staleReadySession } = session;
+      idleCleanup.codex.listSessions
+        .mockImplementationOnce(() => Effect.succeed([session]))
+        .mockImplementationOnce(() =>
+          Effect.promise(
+            () =>
+              new Promise<ReadonlyArray<ProviderSession>>((resolve) => {
+                listSessionsStarted = true;
+                releaseListSessions = resolve;
+              }),
+          ),
+        );
+
+      yield* idleCleanup.codex.waitForRuntimeSubscribers();
+      idleCleanup.codex.emit({
+        type: "turn.completed",
+        eventId: asEventId("runtime-idle-before-explicit-stop"),
+        provider: "codex",
+        createdAt: "2026-02-27T00:04:00.000Z",
+        threadId,
+        payload: { state: "completed" },
+      });
+      yield* waitUntilEffect(
+        () =>
+          runtimeRepository.getByThreadId({ threadId }).pipe(
+            Effect.map((runtime) => {
+              if (Option.isNone(runtime)) {
+                return false;
+              }
+              const payload = runtime.value.runtimePayload;
+              return (
+                payload !== null &&
+                typeof payload === "object" &&
+                !Array.isArray(payload) &&
+                (payload as Record<string, unknown>).lastRuntimeEvent === "turn.completed"
+              );
+            }),
+          ),
+        500,
+        20,
+        "runtime completion persistence",
+      );
+      yield* waitUntil(() => listSessionsStarted, 500, 20, "idle listSessions start");
+
+      const stopFiber = yield* provider.stopSession({ threadId }).pipe(Effect.forkChild);
+      const release = releaseListSessions;
+      assert.equal(typeof release, "function");
+      release([staleReadySession]);
+      yield* Fiber.join(stopFiber);
+
+      const binding = yield* directory.getBinding(threadId);
+      assert.equal(Option.isNone(binding), true);
+    }),
+  );
+
+  it.effect("stops a compacted runtime that remains running without an active turn", () =>
+    Effect.gen(function* () {
+      const provider = yield* ProviderService;
+      const threadId = asThreadId("thread-idle-compact-running");
+
+      yield* provider.startSession(threadId, {
+        provider: "codex",
+        threadId,
+        runtimeMode: "full-access",
+      });
+      idleCleanup.codex.stopSession.mockClear();
+      idleCleanup.codex.compactThread.mockImplementationOnce((inputThreadId) =>
+        Effect.sync(() => {
+          idleCleanup.codex.updateSession(inputThreadId, (existing) => ({
+            ...existing,
+            status: "running",
+            activeTurnId: undefined,
+          }));
+        }),
+      );
+      yield* provider.compactThread({ threadId });
+
+      yield* waitUntil(
+        () => idleCleanup.codex.stopSession.mock.calls.length > 0,
+        500,
+        20,
+        "idle runtime stop after compact",
       );
       assert.deepEqual(idleCleanup.codex.stopSession.mock.calls[0]?.[0], threadId);
     }),
