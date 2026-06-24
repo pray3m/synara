@@ -62,6 +62,18 @@ type LegacyProviderRuntimeEvent = {
   readonly [key: string]: unknown;
 };
 
+type ReleaseListSessions = (sessions: ReadonlyArray<ProviderSession>) => void;
+
+// Converts deferred listSessions callbacks into typed release handles for race tests.
+function requireReleaseListSessions(
+  release: ReleaseListSessions | undefined,
+): ReleaseListSessions {
+  if (typeof release !== "function") {
+    assert.fail("Expected listSessions release callback");
+  }
+  return release;
+}
+
 function makeFakeCodexAdapter(provider: ProviderKind = "codex") {
   const sessions = new Map<ThreadId, ProviderSession>();
   const runtimeEventPubSub = Effect.runSync(PubSub.unbounded<ProviderRuntimeEvent>());
@@ -1614,7 +1626,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
       const runtimeRepository = yield* ProviderSessionRuntimeRepository;
       const threadId = asThreadId("thread-idle-fired-new-turn");
       let listSessionsStarted = false;
-      let releaseListSessions: ((sessions: ReadonlyArray<ProviderSession>) => void) | undefined;
+      let releaseListSessions: ReleaseListSessions | undefined;
 
       idleCleanup.codex.stopSession.mockClear();
       const session = yield* provider.startSession(threadId, {
@@ -1677,8 +1689,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
         .pipe(Effect.forkChild);
 
       const release = releaseListSessions;
-      assert.equal(typeof release, "function");
-      release!([staleReadySession]);
+      requireReleaseListSessions(release)([staleReadySession]);
       yield* Fiber.join(sendTurnFiber);
       yield* sleep(100);
 
@@ -1834,7 +1845,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
       const runtimeRepository = yield* ProviderSessionRuntimeRepository;
       const threadId = asThreadId("thread-idle-stop-remove-race");
       let listSessionsStarted = false;
-      let releaseListSessions: ((sessions: ReadonlyArray<ProviderSession>) => void) | undefined;
+      let releaseListSessions: ReleaseListSessions | undefined;
 
       const session = yield* provider.startSession(threadId, {
         provider: "codex",
@@ -1887,8 +1898,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
 
       const stopFiber = yield* provider.stopSession({ threadId }).pipe(Effect.forkChild);
       const release = releaseListSessions;
-      assert.equal(typeof release, "function");
-      release!([staleReadySession]);
+      requireReleaseListSessions(release)([staleReadySession]);
       yield* Fiber.join(stopFiber);
 
       const binding = yield* directory.getBinding(threadId);
@@ -1902,7 +1912,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
       const runtimeRepository = yield* ProviderSessionRuntimeRepository;
       const threadId = asThreadId("thread-idle-runtime-stop-race");
       let listSessionsStarted = false;
-      let releaseListSessions: ((sessions: ReadonlyArray<ProviderSession>) => void) | undefined;
+      let releaseListSessions: ReleaseListSessions | undefined;
 
       const session = yield* provider.startSession(threadId, {
         provider: "codex",
@@ -1960,8 +1970,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
       }
       const stopFiber = yield* provider.stopRuntimeSession({ threadId }).pipe(Effect.forkChild);
       const release = releaseListSessions;
-      assert.equal(typeof release, "function");
-      release!([staleReadySession]);
+      requireReleaseListSessions(release)([staleReadySession]);
       yield* Fiber.join(stopFiber);
 
       assert.equal(idleCleanup.codex.stopSession.mock.calls.length, 1);

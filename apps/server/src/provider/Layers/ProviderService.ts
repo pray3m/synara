@@ -59,6 +59,10 @@ const ProviderRollbackConversationInput = Schema.Struct({
   numTurns: NonNegativeInt,
 });
 
+type StopRuntimeSession = NonNullable<ProviderServiceShape["stopRuntimeSession"]>;
+type StopRuntimeSessionInput = Parameters<StopRuntimeSession>[0];
+type StopRuntimeSessionEffect = ReturnType<StopRuntimeSession>;
+
 function toValidationError(
   operation: string,
   issue: string,
@@ -1061,9 +1065,9 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       });
 
     const stopRuntimeSessionInternal = (
-      rawInput: Parameters<NonNullable<ProviderServiceShape["stopRuntimeSession"]>>[0],
+      rawInput: StopRuntimeSessionInput,
       expectedIdleGeneration?: symbol,
-    ): ReturnType<NonNullable<ProviderServiceShape["stopRuntimeSession"]>> =>
+    ): StopRuntimeSessionEffect =>
       Effect.gen(function* () {
         const input = yield* decodeInputOrValidationError({
           operation: "ProviderService.stopRuntimeSession",
@@ -1119,9 +1123,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         retireRuntimeIdleGeneration(input.threadId, expectedIdleGeneration);
       });
 
-    const stopRuntimeSession: NonNullable<ProviderServiceShape["stopRuntimeSession"]> = (
-      rawInput,
-    ) => stopRuntimeSessionInternal(rawInput);
+    const stopRuntimeSession: StopRuntimeSession = (rawInput) =>
+      stopRuntimeSessionInternal(rawInput);
 
     stopIdleRuntimeSession = (threadId, generation) => {
       const stopEffect = Effect.gen(function* () {
