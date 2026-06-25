@@ -635,6 +635,38 @@ describe("composerAutomation", () => {
       everySeconds: 3600,
     });
 
+    const trailingEachCadence = await resolveComposerAutomationRequest({
+      message: "check CI each hour",
+      cwd: "/tmp/project",
+      nowIso: NOW_ISO,
+      generateIntent: offline,
+    });
+    expect(trailingEachCadence.type).toBe("automation");
+    if (trailingEachCadence.type !== "automation") {
+      throw new Error("Expected automation decision");
+    }
+    expect(trailingEachCadence.resolution.intent.prompt).toBe("check CI");
+    expect(trailingEachCadence.resolution.intent.schedule).toMatchObject({
+      type: "interval",
+      everySeconds: 3600,
+    });
+
+    const leadingEachCadence = await resolveComposerAutomationRequest({
+      message: "each hour check CI",
+      cwd: "/tmp/project",
+      nowIso: NOW_ISO,
+      generateIntent: offline,
+    });
+    expect(leadingEachCadence.type).toBe("automation");
+    if (leadingEachCadence.type !== "automation") {
+      throw new Error("Expected automation decision");
+    }
+    expect(leadingEachCadence.resolution.intent.prompt).toBe("check CI");
+    expect(leadingEachCadence.resolution.intent.schedule).toMatchObject({
+      type: "interval",
+      everySeconds: 3600,
+    });
+
     const punctuatedFiller = await resolveComposerAutomationRequest({
       message: "create an automation for me!",
       cwd: "/tmp/project",
