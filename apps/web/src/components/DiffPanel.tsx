@@ -388,8 +388,14 @@ export default function DiffPanel({
   const setRepoDiffScope = useRepoDiffScopeStore((store) => store.setScope);
   const [collapsedFiles, setCollapsedFiles] = useState<Set<string>>(() => new Set());
   const [fileTreeOpen, setFileTreeOpen] = useState(false);
+  // Lazy-mount the review file tree on first open so a closed diff panel never
+  // pays to filter/build/render the side tree (the common case). Keep it mounted
+  // afterward so the open/close animation plays and the filter + expand state
+  // persist across toggles.
+  const [fileTreeMounted, setFileTreeMounted] = useState(false);
   const toggleFileTree = useCallback(() => {
     setFileTreeOpen((previous) => !previous);
+    setFileTreeMounted(true);
   }, []);
   const closeFileTree = useCallback(() => {
     setFileTreeOpen(false);
@@ -1180,14 +1186,19 @@ export default function DiffPanel({
               aria-hidden={!fileTreeOpen}
               inert={!fileTreeOpen}
             >
-              <ReviewFileTreePanel
-                files={renderableFiles}
-                selectedFilePath={selectedFilePath}
-                resolvedTheme={resolvedTheme}
-                isLoading={activeReviewIsLoading}
-                onSelectFile={selectFile}
-                onClose={closeFileTree}
-              />
+              {/* Empty until first open: the wrapper stays mounted (free) so the
+                  width reveal animates, but the tree only filters/builds once the
+                  user actually opens it. */}
+              {fileTreeMounted ? (
+                <ReviewFileTreePanel
+                  files={renderableFiles}
+                  selectedFilePath={selectedFilePath}
+                  resolvedTheme={resolvedTheme}
+                  isLoading={activeReviewIsLoading}
+                  onSelectFile={selectFile}
+                  onClose={closeFileTree}
+                />
+              ) : null}
             </div>
           )}
         </div>
