@@ -243,7 +243,7 @@ describe("resolvePreferredComposerModelSelection", () => {
 
     expect(resolved).toEqual({
       instanceId: "claudeAgent",
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
     });
   });
 
@@ -274,7 +274,7 @@ describe("resolvePreferredComposerModelSelection", () => {
 
     expect(resolved).toEqual({
       instanceId: providerInstanceId("work"),
-      model: "claude-sonnet-4-6",
+      model: "claude-sonnet-5",
     });
   });
 });

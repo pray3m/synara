@@ -7,6 +7,7 @@ import {
   PROVIDER_DISPLAY_NAMES,
   type ProviderInstanceConfig,
   type ProviderInstanceConfigMap,
+  type ProviderInstanceEnvironment,
   type ProviderInstanceId,
   type ProviderKind,
   type ServerProviderStatus,
@@ -88,6 +89,7 @@ import { Switch } from "../components/ui/switch";
 import { toastManager } from "../components/ui/toast";
 import { ThemePackEditor } from "../components/ThemePackEditor";
 import { DebouncedSettingTextInput } from "../components/settings/DebouncedSettingTextInput";
+import { ProviderInstanceEnvironmentEditor } from "../components/settings/ProviderInstanceEnvironmentEditor";
 import {
   SettingsCard,
   SettingsListRow,
@@ -671,6 +673,31 @@ function providerStatusDisplayName(provider: ServerProviderStatus): string {
     : provider.provider;
 }
 
+function providerInstanceStatusSummary(status: ServerProviderStatus | undefined): {
+  dotClassName: string;
+  label: string;
+} {
+  if (!status) {
+    return { dotClassName: "bg-muted-foreground/40", label: "Not checked yet" };
+  }
+  if (status.authStatus === "unauthenticated") {
+    return { dotClassName: "bg-amber-500", label: "Sign in required" };
+  }
+  if (status.authStatus === "authenticated") {
+    return {
+      dotClassName: status.status === "ready" ? "bg-emerald-500" : "bg-amber-500",
+      label: status.authLabel?.trim() || "Authenticated",
+    };
+  }
+  if (status.status === "error" || !status.available) {
+    return { dotClassName: "bg-red-500", label: status.message?.trim() || "Unavailable" };
+  }
+  return {
+    dotClassName: "bg-muted-foreground/40",
+    label: status.message?.trim() || "Status unknown",
+  };
+}
+
 function providerUpdateFailureMessage(provider: ServerProviderStatus | undefined): string | null {
   const state = provider?.updateState;
   if (!state || (state.status !== "failed" && state.status !== "unchanged")) {
@@ -850,6 +877,16 @@ function SettingsRouteView() {
               (status.instanceId ?? status.provider) === status.provider,
           )
           .map((status) => [status.provider, status]),
+      ),
+    [serverConfigQuery.data?.providers],
+  );
+  const providerStatusByInstance = useMemo(
+    () =>
+      new Map(
+        (serverConfigQuery.data?.providers ?? []).map((status) => [
+          status.instanceId ?? status.provider,
+          status,
+        ]),
       ),
     [serverConfigQuery.data?.providers],
   );
@@ -1301,19 +1338,31 @@ function SettingsRouteView() {
       patch: {
         readonly displayName?: string;
         readonly enabled?: boolean;
+        readonly environment?: ProviderInstanceEnvironment;
         readonly config?: Record<string, unknown>;
       },
     ) => {
       const existing = settings.providerInstances[instanceId];
       if (!existing) return;
-      const { displayName: _existingDisplayName, ...existingWithoutDisplayName } = existing;
+      const {
+        displayName: existingDisplayName,
+        environment: existingEnvironment,
+        ...existingRest
+      } = existing;
       const trimmedDisplayName = patch.displayName?.trim();
+      const nextDisplayName =
+        patch.displayName !== undefined ? trimmedDisplayName : existingDisplayName;
+      const nextEnvironment =
+        patch.environment !== undefined ? patch.environment : existingEnvironment;
       updateSettings({
         providerInstances: {
           ...settings.providerInstances,
           [instanceId]: {
-            ...(patch.displayName !== undefined ? existingWithoutDisplayName : existing),
-            ...(trimmedDisplayName ? { displayName: trimmedDisplayName } : {}),
+            ...existingRest,
+            ...(nextDisplayName ? { displayName: nextDisplayName } : {}),
+            ...(nextEnvironment && nextEnvironment.length > 0
+              ? { environment: nextEnvironment }
+              : {}),
             ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
             ...(patch.config
               ? {
@@ -2985,6 +3034,9 @@ function SettingsRouteView() {
           <div className="space-y-2">
             {instanceRows.map(([instanceId, instance]) => {
               const config = instance.config;
+              const instanceStatus = providerInstanceStatusSummary(
+                instance.enabled === false ? undefined : providerStatusByInstance.get(instanceId),
+              );
               return (
                 <div
                   key={instanceId}
@@ -2996,6 +3048,14 @@ function SettingsRouteView() {
                         {instance.displayName || instanceId}
                       </div>
                       <div className="truncate text-[11px] text-muted-foreground">{instanceId}</div>
+                      {instance.enabled !== false ? (
+                        <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
+                          <span
+                            className={`size-1.5 shrink-0 rounded-full ${instanceStatus.dotClassName}`}
+                          />
+                          <span className="truncate">{instanceStatus.label}</span>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="flex shrink-0 items-center gap-2">
                       <Switch
@@ -3196,6 +3256,13 @@ function SettingsRouteView() {
                         />
                       </label>
                     ) : null}
+                    <ProviderInstanceEnvironmentEditor
+                      instanceId={instanceId}
+                      environment={instance.environment}
+                      onChange={(nextEnvironment) =>
+                        updateProviderInstance(instanceId, { environment: nextEnvironment })
+                      }
+                    />
                   </div>
                 </div>
               );
