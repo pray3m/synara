@@ -89,6 +89,7 @@ import { Switch } from "../components/ui/switch";
 import { toastManager } from "../components/ui/toast";
 import { ThemePackEditor } from "../components/ThemePackEditor";
 import { DebouncedSettingTextInput } from "../components/settings/DebouncedSettingTextInput";
+import { providerStatusInstanceKey } from "../lib/providerAvailability";
 import { ProviderInstanceEnvironmentEditor } from "../components/settings/ProviderInstanceEnvironmentEditor";
 import {
   SettingsCard,
@@ -656,12 +657,6 @@ function providerUpdateStatusLabel(provider: ServerProviderStatus): string | nul
   }
   const currentVersion = formatProviderVersion(provider.version);
   return currentVersion ? `Current ${currentVersion}` : null;
-}
-
-function providerStatusTargetKey(
-  provider: Pick<ServerProviderStatus, "provider" | "instanceId">,
-): ProviderInstanceId | ProviderKind {
-  return provider.instanceId ?? provider.provider;
 }
 
 function providerStatusDisplayName(provider: ServerProviderStatus): string {
@@ -1412,7 +1407,7 @@ function SettingsRouteView() {
         return;
       }
       const instanceId = providerStatus.instanceId;
-      const targetKey = providerStatusTargetKey(providerStatus);
+      const targetKey = providerStatusInstanceKey(providerStatus);
       const displayName = providerStatusDisplayName(providerStatus);
       if (updatingProviders.has(targetKey)) {
         return;
@@ -1426,7 +1421,7 @@ function SettingsRouteView() {
         const refreshedProvider = result.providers.find(
           (status) =>
             (status.driver ?? status.provider) === provider &&
-            providerStatusTargetKey(status) === targetKey,
+            providerStatusInstanceKey(status) === targetKey,
         );
         const failureMessage = providerUpdateFailureMessage(refreshedProvider);
         if (failureMessage) {
@@ -2937,7 +2932,7 @@ function SettingsRouteView() {
               )}
             >
               {outdatedProviderStatuses.map((providerStatus) => {
-                const targetKey = providerStatusTargetKey(providerStatus);
+                const targetKey = providerStatusInstanceKey(providerStatus);
                 const updateAdvisory = providerStatus.versionAdvisory;
                 const updateState = providerStatus.updateState?.status;
                 const isProviderUpdateActive =
@@ -3399,7 +3394,7 @@ function SettingsRouteView() {
                 const updateAdvisory = providerStatus?.versionAdvisory;
                 const providerUpdateState = providerStatus?.updateState?.status;
                 const providerUpdateTargetKey = providerStatus
-                  ? providerStatusTargetKey(providerStatus)
+                  ? providerStatusInstanceKey(providerStatus)
                   : providerSettings.provider;
                 const isProviderUpdateActive =
                   providerUpdateState === "queued" ||
