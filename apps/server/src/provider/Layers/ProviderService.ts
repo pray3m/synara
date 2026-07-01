@@ -292,6 +292,27 @@ function readPersistedProviderInstanceId(
   return typeof raw === "string" && raw.trim().length > 0 ? raw.trim() : undefined;
 }
 
+// getBinding materializes the driver-default instance id onto legacy rows, and
+// default-instance sessions persist the default id in their payload. Only a
+// NON-default id (or an instance-routed model selection) proves an explicit
+// instance binding; everything else must keep seeding launches with the
+// binding's persisted provider options.
+function bindingHasExplicitProviderInstance(input: {
+  readonly binding: ProviderRuntimeBinding;
+  readonly persistedPayloadProviderInstanceId: string | undefined;
+  readonly persistedModelSelection: ModelSelection | undefined;
+}): boolean {
+  const defaultId = defaultInstanceIdForDriver(input.binding.provider);
+  return (
+    (input.binding.providerInstanceId !== undefined &&
+      input.binding.providerInstanceId !== defaultId) ||
+    (input.persistedPayloadProviderInstanceId !== undefined &&
+      input.persistedPayloadProviderInstanceId !== defaultId) ||
+    (input.persistedModelSelection !== undefined &&
+      resolveModelSelectionInstanceId(input.persistedModelSelection) !== input.binding.provider)
+  );
+}
+
 function providerInstanceIdFromBinding(binding: ProviderRuntimeBinding): string {
   const persistedModelSelection = readPersistedModelSelection(binding.runtimePayload);
   return (
@@ -575,6 +596,13 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly providerInstanceId?: string | undefined;
       readonly modelSelection?: ModelSelection | undefined;
       readonly providerOptions?: ProviderStartOptions | undefined;
+      /**
+       * "instance" (default) lets settings-derived instance options override the
+       * caller's options (browser-supplied options must not beat the server).
+       * "caller" preserves persisted legacy launch options during recovery/fork,
+       * where the session's recorded options are the source of truth.
+       */
+      readonly providerOptionsPrecedence?: "instance" | "caller";
     }) =>
       Effect.gen(function* () {
         const explicitProvider = input.provider !== undefined;
@@ -612,10 +640,16 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         return {
           instance,
           modelSelection: modelSelectionForInstance(input.modelSelection, instance),
-          providerOptions: mergeProviderStartOptions(
-            input.providerOptions,
-            providerStartOptionsFromInstance(instance),
-          ),
+          providerOptions:
+            input.providerOptionsPrecedence === "caller"
+              ? mergeProviderStartOptions(
+                  providerStartOptionsFromInstance(instance),
+                  input.providerOptions,
+                )
+              : mergeProviderStartOptions(
+                  input.providerOptions,
+                  providerStartOptionsFromInstance(instance),
+                ),
         } as const;
       });
 
@@ -954,25 +988,21 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           input.binding.runtimePayload,
         );
         const persistedProviderInstanceId = providerInstanceIdFromBinding(input.binding);
-        // getBinding materializes the default instance id onto legacy rows, so
-        // only a non-default binding id proves an explicit instance binding.
-        // Explicitly-stamped bindings also persist the id in the payload;
-        // legacy/default bindings must keep seeding recovery with their
-        // persisted provider options (custom CODEX_HOME, server URLs, ...).
-        const hasProviderInstanceBinding =
-          (input.binding.providerInstanceId !== undefined &&
-            input.binding.providerInstanceId !==
-              defaultInstanceIdForDriver(input.binding.provider)) ||
-          persistedPayloadProviderInstanceId !== undefined ||
-          (persistedModelSelection !== undefined &&
-            resolveModelSelectionInstanceId(persistedModelSelection) !== input.binding.provider);
+        const hasProviderInstanceBinding = bindingHasExplicitProviderInstance({
+          binding: input.binding,
+          persistedPayloadProviderInstanceId,
+          persistedModelSelection,
+        });
         const resolved = yield* resolveLaunchProviderInstance({
           operation: input.operation,
           ...providerKindConstraint(input.binding.provider),
           providerInstanceId: persistedProviderInstanceId,
           ...(persistedModelSelection ? { modelSelection: persistedModelSelection } : {}),
           ...(!hasProviderInstanceBinding && persistedProviderOptions
-            ? { providerOptions: persistedProviderOptions }
+            ? {
+                providerOptions: persistedProviderOptions,
+                providerOptionsPrecedence: "caller" as const,
+              }
             : {}),
         });
         const canReusePersistedResumeCursor =
@@ -1377,14 +1407,18 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         }
         const sourceProviderInstanceId =
           requestedProviderInstanceId ?? sourceBoundProviderInstanceId;
-        const hasSourceProviderInstanceBinding =
-          sourceBinding.providerInstanceId !== undefined ||
-          sourcePayloadProviderInstanceId !== undefined ||
-          (input.modelSelection !== undefined &&
-            resolveModelSelectionInstanceId(input.modelSelection) !== sourceBinding.provider);
+        const hasSourceProviderInstanceBinding = bindingHasExplicitProviderInstance({
+          binding: sourceBinding,
+          persistedPayloadProviderInstanceId: sourcePayloadProviderInstanceId,
+          persistedModelSelection: input.modelSelection,
+        });
         const sourcePersistedProviderOptions = readPersistedProviderOptions(
           sourceBinding.runtimePayload,
         );
+        const usesPersistedSourceOptions =
+          input.providerOptions === undefined &&
+          !hasSourceProviderInstanceBinding &&
+          sourcePersistedProviderOptions !== undefined;
         const resolvedSource = yield* resolveLaunchProviderInstance({
           operation: "ProviderService.forkThread",
           ...providerKindConstraint(sourceBinding.provider),
@@ -1393,6 +1427,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           providerOptions:
             input.providerOptions ??
             (hasSourceProviderInstanceBinding ? undefined : sourcePersistedProviderOptions),
+          ...(usesPersistedSourceOptions ? { providerOptionsPrecedence: "caller" as const } : {}),
         });
         const effectiveProviderOptions = resolvedSource.providerOptions;
         const canReuseSourceResumeCursor = providerStartOptionsEqualForProvider(
