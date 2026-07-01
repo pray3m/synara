@@ -13,6 +13,7 @@ import { createHash } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
 
 import {
+  defaultInstanceIdForDriver,
   ProviderCompactThreadInput,
   ProviderForkThreadInput,
   ModelSelection,
@@ -953,8 +954,15 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           input.binding.runtimePayload,
         );
         const persistedProviderInstanceId = providerInstanceIdFromBinding(input.binding);
+        // getBinding materializes the default instance id onto legacy rows, so
+        // only a non-default binding id proves an explicit instance binding.
+        // Explicitly-stamped bindings also persist the id in the payload;
+        // legacy/default bindings must keep seeding recovery with their
+        // persisted provider options (custom CODEX_HOME, server URLs, ...).
         const hasProviderInstanceBinding =
-          input.binding.providerInstanceId !== undefined ||
+          (input.binding.providerInstanceId !== undefined &&
+            input.binding.providerInstanceId !==
+              defaultInstanceIdForDriver(input.binding.provider)) ||
           persistedPayloadProviderInstanceId !== undefined ||
           (persistedModelSelection !== undefined &&
             resolveModelSelectionInstanceId(persistedModelSelection) !== input.binding.provider);

@@ -1178,122 +1178,11 @@ export function patchCustomModels(
   };
 }
 
-type ProviderLaunchSettingsForCustomModelPatch = Partial<
-  Pick<
-    AppSettings,
-    | "claudeBinaryPath"
-    | "claudeHomePath"
-    | "codexBinaryPath"
-    | "codexHomePath"
-    | "cursorApiEndpoint"
-    | "cursorBinaryPath"
-    | "geminiBinaryPath"
-    | "grokBinaryPath"
-    | "kiloBinaryPath"
-    | "kiloServerPassword"
-    | "kiloServerUrl"
-    | "openCodeBinaryPath"
-    | "openCodeExperimentalWebSockets"
-    | "openCodeServerPassword"
-    | "openCodeServerUrl"
-    | "piAgentDir"
-    | "piBinaryPath"
-  >
->;
-
-function addConfigString(
-  config: Record<string, unknown>,
-  key: string,
-  value: string | null | undefined,
-): void {
-  const trimmed = value?.trim();
-  if (trimmed) {
-    config[key] = trimmed;
-  }
-}
-
-function providerLaunchConfigForCustomModelPatch(
-  settings: ProviderLaunchSettingsForCustomModelPatch,
-  provider: ProviderKind,
-): Record<string, unknown> {
-  const config: Record<string, unknown> = {};
-  switch (provider) {
-    case "codex":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("codex", settings.codexBinaryPath),
-      );
-      addConfigString(config, "homePath", settings.codexHomePath);
-      return config;
-    case "claudeAgent":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("claudeAgent", settings.claudeBinaryPath),
-      );
-      addConfigString(config, "homePath", settings.claudeHomePath);
-      return config;
-    case "cursor":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("cursor", settings.cursorBinaryPath),
-      );
-      addConfigString(config, "apiEndpoint", settings.cursorApiEndpoint);
-      return config;
-    case "gemini":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("gemini", settings.geminiBinaryPath),
-      );
-      return config;
-    case "grok":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("grok", settings.grokBinaryPath),
-      );
-      return config;
-    case "kilo":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("kilo", settings.kiloBinaryPath),
-      );
-      addConfigString(config, "serverUrl", settings.kiloServerUrl);
-      addConfigString(config, "serverPassword", settings.kiloServerPassword);
-      return config;
-    case "opencode":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("opencode", settings.openCodeBinaryPath),
-      );
-      addConfigString(config, "serverUrl", settings.openCodeServerUrl);
-      addConfigString(config, "serverPassword", settings.openCodeServerPassword);
-      if (settings.openCodeExperimentalWebSockets === true) {
-        config.experimentalWebSockets = true;
-      }
-      return config;
-    case "pi":
-      addConfigString(
-        config,
-        "binaryPath",
-        normalizeProviderBinaryPathOverride("pi", settings.piBinaryPath),
-      );
-      addConfigString(config, "agentDir", settings.piAgentDir);
-      return config;
-  }
-}
-
 export function patchCustomModelsForProviderInstance(
   settings: Pick<
     AppSettings,
     "codexAccounts" | "codexHomePath" | "providerInstances" | "selectedCodexAccountId"
-  > &
-    ProviderLaunchSettingsForCustomModelPatch,
+  >,
   instance: Pick<ProviderInstanceOption, "instanceId" | "provider" | "isDefault">,
   models: string[],
 ): Partial<Pick<AppSettings, CustomModelSettingsKey | "providerInstances">> {
@@ -1304,15 +1193,11 @@ export function patchCustomModelsForProviderInstance(
           (account) => providerInstanceIdForCodexAccount(account.id) === instance.instanceId,
         )
       : undefined;
-  const codexAccountConfig =
-    codexAccount && !codexAccount.isDefault
-      ? {
-          ...(codexAccount.homePath ? { homePath: codexAccount.homePath } : {}),
-          ...(codexAccount.shadowHomePath ? { shadowHomePath: codexAccount.shadowHomePath } : {}),
-          ...(codexAccount.id ? { accountId: codexAccount.id } : {}),
-        }
-      : {};
 
+  // Store only the custom models here. Launch settings for derived instances
+  // (built-in defaults, legacy Codex accounts) are merged in key-by-key at
+  // derivation time, so copying them would freeze a snapshot that stops
+  // following later edits to the normal provider settings.
   return {
     providerInstances: {
       ...settings.providerInstances,
@@ -1323,8 +1208,6 @@ export function patchCustomModelsForProviderInstance(
           ...(codexAccount?.label ? { displayName: codexAccount.label } : {}),
         }),
         config: {
-          ...providerLaunchConfigForCustomModelPatch(settings, instance.provider),
-          ...codexAccountConfig,
           ...(isRecord(existing?.config) ? existing.config : {}),
           customModels: models,
         },

@@ -11,6 +11,7 @@ import {
   setPinnedMessageDone,
   setPinnedMessageLabel,
 } from "@t3tools/shared/pinnedMessages";
+import { resolveModelSelectionInstanceId } from "@t3tools/shared/providerInstances";
 import {
   addThreadMarker,
   removeThreadMarker,
@@ -892,8 +893,27 @@ const makeOrchestrationProjectionPipeline = Effect.gen(function* () {
           if (Option.isNone(existingRow)) {
             return;
           }
+          // The provider reactor may still reject an instance switch for a
+          // bound thread after this event is projected. Only adopt a selection
+          // routed at another instance on a fresh thread, so a rejected switch
+          // cannot overwrite the thread's working selection.
+          const [messages, session] = yield* Effect.all([
+            projectionThreadMessageRepository.listByThreadId({
+              threadId: event.payload.threadId,
+            }),
+            projectionThreadSessionRepository.getByThreadId({
+              threadId: event.payload.threadId,
+            }),
+          ]);
+          const canAdoptFirstTurnInstance =
+            existingRow.value.latestTurnId === null &&
+            Option.isNone(session) &&
+            messages.length <= 1;
           const modelSelectionPatch =
-            event.payload.modelSelection !== undefined
+            event.payload.modelSelection !== undefined &&
+            (resolveModelSelectionInstanceId(event.payload.modelSelection) ===
+              resolveModelSelectionInstanceId(existingRow.value.modelSelection) ||
+              canAdoptFirstTurnInstance)
               ? { modelSelection: event.payload.modelSelection }
               : {};
           yield* projectionThreadRepository.upsert({

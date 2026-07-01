@@ -179,7 +179,12 @@ const makeCodexTextGeneration = Effect.gen(function* () {
     Effect.gen(function* () {
       const sourceCodexHome = sourceHomePath?.trim() || resolveCodexHome(process.env);
       const sourceAuthHome = authHomePath?.trim();
-      const shouldCopyAuth = !accountId?.trim() || Boolean(sourceAuthHome);
+      // Accounts read auth from their shadow home or their own dedicated home;
+      // only accounts routed at the shared env-derived home must stay isolated
+      // from the default account's credentials.
+      const hasDedicatedAccountHome = Boolean(sourceHomePath?.trim());
+      const shouldCopyAuth =
+        !accountId?.trim() || Boolean(sourceAuthHome) || hasDedicatedAccountHome;
       const isolatedHomePath = path.join(
         tempDir,
         `t3code-codex-home-${process.pid}-${randomUUID()}`,
