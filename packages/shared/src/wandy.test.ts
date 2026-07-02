@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { describe, it } from "vitest";
 
@@ -16,6 +16,7 @@ import {
   isWandyExplicitlyDisabledInEnv,
   resolveWandyEnabledFromSettings,
   syncWandyEnabledEnv,
+  wandyRuntimeRelativeParts,
   resolveBundledWandyLauncherPath,
   resolveWandyLauncherPath,
   resolveStableWandyAppDir,
@@ -383,6 +384,61 @@ describe("resolveWandyLauncherPath", () => {
       );
     } finally {
       rmSync(packageRoot, { recursive: true, force: true });
+    }
+  });
+});
+
+// The standalone launchers cannot import this module, so they carry copies of
+// the platform runtime table. These tests fail if a copy drifts from the
+// shared source of truth.
+describe("standalone launcher runtime tables", () => {
+  const PLATFORM_KEYS = [
+    ["darwin", "arm64"],
+    ["darwin", "x64"],
+    ["linux", "arm64"],
+    ["linux", "x64"],
+    ["win32", "arm64"],
+    ["win32", "x64"],
+  ] as const;
+
+  function extractTableEntry(source: string, key: string): readonly string[] {
+    const match = source.match(
+      new RegExp(`"${key}":\\s*(?:\\{\\s*"executablePath":\\s*)?(\\[[^\\]]*\\])`),
+    );
+    assert.ok(match?.[1], `runtime table entry for ${key} not found`);
+    return JSON.parse(match[1]) as string[];
+  }
+
+  it("bin/wandy matches wandyRuntimeRelativeParts", () => {
+    const source = readFileSync(path.resolve(import.meta.dirname, "../../wandy/bin/wandy"), "utf8");
+    for (const [platform, arch] of PLATFORM_KEYS) {
+      assert.deepEqual(
+        extractTableEntry(source, `${platform}-${arch}`),
+        wandyRuntimeRelativeParts(platform, arch),
+        `bin/wandy entry for ${platform}-${arch} drifted from the shared table`,
+      );
+    }
+  });
+
+  it("bin/wandy-mcp delegates to bin/wandy", () => {
+    const source = readFileSync(
+      path.resolve(import.meta.dirname, "../../wandy/bin/wandy-mcp"),
+      "utf8",
+    );
+    assert.match(source, /require\("\.\/wandy"\);/);
+  });
+
+  it("apps/desktop/scripts/wandyMcp.mjs matches wandyRuntimeRelativeParts", () => {
+    const source = readFileSync(
+      path.resolve(import.meta.dirname, "../../../apps/desktop/scripts/wandyMcp.mjs"),
+      "utf8",
+    );
+    for (const [platform, arch] of PLATFORM_KEYS) {
+      assert.deepEqual(
+        extractTableEntry(source, `${platform}-${arch}`),
+        wandyRuntimeRelativeParts(platform, arch),
+        `wandyMcp.mjs entry for ${platform}-${arch} drifted from the shared table`,
+      );
     }
   });
 });

@@ -195,6 +195,14 @@ function platformLaunchTable() {
   );
 }
 
+function renderMcpLauncherDelegate() {
+  return `#!/usr/bin/env node
+// Delegates to the wandy launcher. Kept as a separate bin entry so MCP
+// configs can reference \`wandy-mcp\` directly; behavior is identical.
+require("./wandy");
+`;
+}
+
 function renderLauncher() {
   return `#!/usr/bin/env node
 const { spawn } = require("node:child_process");
@@ -547,7 +555,7 @@ function stagePrivatePackage(packageName, version, outDir) {
 
   const launcher = renderLauncher();
   writeExecutable(path.join(stagedPackageRoot, "bin", "wandy"), launcher);
-  writeExecutable(path.join(stagedPackageRoot, "bin", "wandy-mcp"), launcher);
+  writeExecutable(path.join(stagedPackageRoot, "bin", "wandy-mcp"), renderMcpLauncherDelegate());
   writeFileSync(
     path.join(stagedPackageRoot, "scripts", "postinstall.mjs"),
     renderPostinstall(packageName, version),

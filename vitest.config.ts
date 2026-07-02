@@ -7,6 +7,9 @@ export default defineConfig({
       // Wandy enablement is derived from the host env (the desktop app exports
       // DPCODE_MODE=desktop to spawned shells). Pin it off so suites behave
       // like CI everywhere; tests that exercise Wandy pass explicit envs.
+      // Tests that temporarily set this on process.env rely on vitest's
+      // default per-file process isolation (pool: "forks", isolate: true) —
+      // don't disable isolation without revisiting them.
       SYNARA_ENABLE_WANDY: "0",
     },
   },

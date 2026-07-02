@@ -132,7 +132,12 @@ export function ensureStableWandyHelper(
       stableAppDir,
     });
     ensureExecutable(stableLauncherPath);
-    FS.writeFileSync(fingerprintPath, `${sourceFingerprint}\n`);
+    try {
+      FS.writeFileSync(fingerprintPath, `${sourceFingerprint}\n`);
+    } catch {
+      // The install itself succeeded, so the fresh stable copy is usable now;
+      // a missing manifest only costs a reinstall on the next launch.
+    }
   } catch (error) {
     return {
       status: "fallback",

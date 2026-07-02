@@ -735,6 +735,11 @@ const buildDesktopArtifact = Effect.fn("buildDesktopArtifact")(function* (
       message: `Unsupported platform '${options.platform}'.`,
     });
   }
+  if (!platformConfig.archChoices.includes(options.arch)) {
+    return yield* new BuildScriptError({
+      message: `Unsupported arch '${options.arch}' for platform '${options.platform}'. Supported: ${platformConfig.archChoices.join(", ")}.`,
+    });
+  }
   const nativeBuildHostIssue = validateDesktopNativeBuildHost({
     platform: options.platform,
     arch: options.arch,
