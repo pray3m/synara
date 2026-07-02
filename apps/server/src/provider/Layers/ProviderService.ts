@@ -128,6 +128,13 @@ function toRuntimePayloadFromSession(
     readonly providerInstanceId?: string;
     readonly lastRuntimeEvent?: string;
     readonly lastRuntimeEventAt?: string;
+    /**
+     * Launch paths own the persisted launch options: when they carry no
+     * providerOptions, the previous binding's options must be cleared instead
+     * of surviving the runtime-payload merge, or recovery keeps starting the
+     * thread with a home/credentials override the user already removed.
+     */
+    readonly launchOptionsAuthoritative?: boolean;
   },
 ): Record<string, unknown> {
   const persistedProviderOptions =
@@ -149,10 +156,14 @@ function toRuntimePayloadFromSession(
     ...(extra?.modelSelection !== undefined ? { modelSelection: extra.modelSelection } : {}),
     ...(persistedProviderOptions !== undefined
       ? { providerOptions: persistedProviderOptions }
-      : {}),
+      : extra?.launchOptionsAuthoritative
+        ? { providerOptions: null }
+        : {}),
     ...(credentialsFingerprint !== undefined
       ? { providerOptionsCredentialsFingerprint: credentialsFingerprint }
-      : {}),
+      : extra?.launchOptionsAuthoritative
+        ? { providerOptionsCredentialsFingerprint: null }
+        : {}),
     ...(extra?.lastRuntimeEvent !== undefined ? { lastRuntimeEvent: extra.lastRuntimeEvent } : {}),
     ...(extra?.lastRuntimeEventAt !== undefined
       ? { lastRuntimeEventAt: extra.lastRuntimeEventAt }
@@ -789,6 +800,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         readonly providerInstanceId?: string;
         readonly lastRuntimeEvent?: string;
         readonly lastRuntimeEventAt?: string;
+        readonly launchOptionsAuthoritative?: boolean;
       },
     ) =>
       directory.upsert({
@@ -1106,6 +1118,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
         yield* upsertSessionBinding(resumedWithInstance, input.binding.threadId, {
           ...(resolved.modelSelection ? { modelSelection: resolved.modelSelection } : {}),
           ...(resolved.providerOptions ? { providerOptions: resolved.providerOptions } : {}),
+          launchOptionsAuthoritative: true,
         });
         yield* analytics.record("provider.session.recovered", {
           provider: resumed.provider,
@@ -1359,6 +1372,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           modelSelection: resolved.modelSelection,
           providerOptions: effectiveProviderOptions,
           providerInstanceId: resolved.instance.instanceId,
+          launchOptionsAuthoritative: true,
         });
         yield* analytics.record("provider.session.started", {
           provider: session.provider,
@@ -1513,6 +1527,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             providerInstanceId: resolvedSource.instance.instanceId,
             lastRuntimeEvent: "provider.thread.forked",
             lastRuntimeEventAt: new Date().toISOString(),
+            launchOptionsAuthoritative: true,
           });
         } else {
           yield* directory.upsert({

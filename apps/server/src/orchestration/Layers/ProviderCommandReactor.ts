@@ -398,12 +398,27 @@ const make = Effect.gen(function* () {
     const modelSelection =
       input.modelSelection ?? threadModelSelections.get(input.threadId) ?? thread?.modelSelection;
     const providerOptions = input.providerOptions ?? threadProviderOptions.get(input.threadId);
+    let selectionProvider = Schema.is(ProviderKind)(thread?.session?.providerName)
+      ? thread.session.providerName
+      : undefined;
+    let selectionProviderOptions = providerOptions;
+    if (!selectionProvider && modelSelection) {
+      // Fresh threads have no session bound yet (first-turn worktree branch
+      // naming runs before startSession), so route by the selection's
+      // provider instance instead of skipping AI text generation entirely.
+      const settings = yield* serverSettings.getSettings;
+      const instance = resolveProviderInstance(settings, {
+        instanceId: resolveModelSelectionInstanceId(modelSelection),
+      });
+      if (instance) {
+        selectionProvider = instance.driver;
+        selectionProviderOptions = providerOptions ?? providerStartOptionsFromInstance(instance);
+      }
+    }
     const threadTextGenerationInput = resolveTextGenerationInputForSelection(
       modelSelection,
-      providerOptions,
-      Schema.is(ProviderKind)(thread?.session?.providerName)
-        ? thread.session.providerName
-        : undefined,
+      selectionProviderOptions,
+      selectionProvider,
     );
 
     if (threadTextGenerationInput || !input.useConfiguredFallback) {
