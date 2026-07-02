@@ -229,18 +229,7 @@ function prepareDpCodeCodexHomeOverlay(input: {
   }
 
   if (accountSegment && !shadowHomePath && !hasDedicatedAccountHome) {
-    for (const entry of CODEX_ACCOUNT_PRIVATE_STATE_FILES) {
-      const targetPath = path.join(overlayHomePath, entry);
-      try {
-        // Earlier builds symlinked shared auth into account overlays; drop the
-        // stale alias so the account's own login (a real file) takes its place.
-        if (lstatSync(targetPath).isSymbolicLink()) {
-          rmSync(targetPath, { force: true });
-        }
-      } catch {
-        // Missing private state is created lazily by the account's own login.
-      }
-    }
+    dropStaleAccountPrivateStateSymlinks(overlayHomePath);
   }
 
   if (shadowHomePath) {
@@ -287,6 +276,22 @@ function prepareDpCodeCodexHomeOverlay(input: {
   return overlayHomePath;
 }
 
+// Earlier builds symlinked shared private state (auth) into account homes;
+// drop the stale alias so the account's own login (a real file) takes its
+// place instead of silently aliasing the default account's credentials.
+function dropStaleAccountPrivateStateSymlinks(accountHomePath: string): void {
+  for (const entry of CODEX_ACCOUNT_PRIVATE_STATE_FILES) {
+    const targetPath = path.join(accountHomePath, entry);
+    try {
+      if (lstatSync(targetPath).isSymbolicLink()) {
+        rmSync(targetPath, { force: true });
+      }
+    } catch {
+      // Missing private state is created lazily by the account's own login.
+    }
+  }
+}
+
 // With the dpcode-browser plugin enabled Synara skips the managed overlay,
 // but an accountId-only instance still must not share the default Codex
 // home/auth. Point CODEX_HOME at the same per-account directory overlay mode
@@ -308,6 +313,14 @@ function prepareDirectCodexAccountHome(
     return undefined;
   }
   mkdirSync(accountHomePath, { recursive: true });
+  dropStaleAccountPrivateStateSymlinks(accountHomePath);
+  // Overlay mode may have left a config.toml with the dpcode-browser plugin
+  // forced off, and a fresh directory has no config at all: materialize the
+  // source home's config unmodified so plugin-enabled launches keep the
+  // user's plugin/model-provider configuration.
+  const sourceConfigPath = path.join(sourceHomePath, "config.toml");
+  const sourceConfig = existsSync(sourceConfigPath) ? readFileSync(sourceConfigPath, "utf8") : "";
+  writeFileSync(path.join(accountHomePath, "config.toml"), sourceConfig, "utf8");
   return accountHomePath;
 }
 

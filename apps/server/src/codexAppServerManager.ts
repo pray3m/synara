@@ -1828,6 +1828,14 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
     return this.sessions.has(threadId);
   }
 
+  /**
+   * Launch options of a live session. Event projection needs these to predict
+   * generated-image paths against the account home the session writes under.
+   */
+  getSessionCodexOptions(threadId: ThreadId): CodexDiscoveryOptions | undefined {
+    return this.sessions.get(threadId)?.codexOptions;
+  }
+
   stopAll(): void {
     for (const threadId of this.sessions.keys()) {
       this.stopSession(threadId);

@@ -6,6 +6,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readFileSync,
   readlinkSync,
   rmSync,
   symlinkSync,
@@ -149,6 +150,7 @@ describe("buildCodexProcessEnv account overlays", () => {
       CODEX_HOME: fixture.homePath,
       DPCODE_DISABLE_CODEX_DPCODE_BROWSER_PLUGIN: "0",
     };
+    writeFileSync(path.join(fixture.homePath, "config.toml"), 'model = "gpt-5.4"\n', "utf8");
 
     const env = buildCodexProcessEnv({
       env: pluginEnabledEnv,
@@ -160,9 +162,45 @@ describe("buildCodexProcessEnv account overlays", () => {
     assert.ok(accountHomePath);
     assert.notStrictEqual(path.resolve(accountHomePath), path.resolve(fixture.homePath));
     assert.ok(lstatSync(accountHomePath).isDirectory());
+    // The user's config must reach the account home unmodified (no forced
+    // dpcode-browser disable), so plugin/model-provider settings apply.
+    assert.strictEqual(
+      readFileSync(path.join(accountHomePath, "config.toml"), "utf8"),
+      'model = "gpt-5.4"\n',
+    );
     // The default account keeps using the shared home in this mode.
     const defaultEnv = buildCodexProcessEnv({ env: pluginEnabledEnv, platform: "win32" });
     assert.strictEqual(defaultEnv.CODEX_HOME, fixture.homePath);
+  });
+
+  it("drops stale shared-auth symlinks when reusing the account home with the plugin enabled", () => {
+    const fixture = makeAccountFixture({ shadowAuth: "missing" });
+    const pluginEnabledEnv = {
+      ...fixture.env,
+      CODEX_HOME: fixture.homePath,
+      DPCODE_DISABLE_CODEX_DPCODE_BROWSER_PLUGIN: "0",
+    };
+
+    // Simulate an account home a previous overlay-mode build left behind:
+    // auth.json symlinked to the shared home and a plugin-disabled config.
+    const overlayEnv = buildCodexProcessEnv({
+      env: { ...fixture.env, CODEX_HOME: fixture.homePath },
+      accountId: "work",
+      platform: "win32",
+    });
+    const accountHomePath = overlayEnv.CODEX_HOME;
+    assert.ok(accountHomePath);
+    symlinkSync(path.join(fixture.homePath, "auth.json"), path.join(accountHomePath, "auth.json"));
+
+    const env = buildCodexProcessEnv({
+      env: pluginEnabledEnv,
+      accountId: "work",
+      platform: "win32",
+    });
+
+    assert.strictEqual(env.CODEX_HOME, accountHomePath);
+    // The stale alias to the default account's auth must be gone.
+    assert.throws(() => lstatSync(path.join(accountHomePath, "auth.json")));
   });
 
   it("mirrors private auth from an account's own dedicated home", () => {
