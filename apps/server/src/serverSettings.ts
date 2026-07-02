@@ -489,16 +489,28 @@ const makeServerSettings = Effect.gen(function* () {
       Effect.flatMap(materializeProviderConfigSecrets),
     );
 
+  // Secret writes must land before the settings file references them (a crash
+  // after the file write must still materialize), while removals are returned
+  // as a deferred effect the caller runs only after the settings write
+  // succeeds — otherwise a failed write leaves a settings file whose redacted
+  // markers point at secrets that no longer exist.
   const persistProviderSecrets = (
     current: ServerSettings,
     next: ServerSettings,
-  ): Effect.Effect<ServerSettings, ServerSettingsError> =>
+  ): Effect.Effect<
+    {
+      readonly settings: ServerSettings;
+      readonly removeObsoleteSecrets: Effect.Effect<void, ServerSettingsError>;
+    },
+    ServerSettingsError
+  > =>
     Effect.gen(function* () {
       const providerInstances: Record<string, ProviderInstanceConfig> = {
         ...next.providerInstances,
       };
       const nextEnvironmentSecretKeys = new Set<string>();
       const nextConfigSecretKeys = new Set<string>();
+      const obsoleteSecretRemovals: Array<Effect.Effect<void, ServerSettingsError>> = [];
 
       for (const [instanceId, instance] of Object.entries(next.providerInstances)) {
         if (instance.environment) {
@@ -506,14 +518,16 @@ const makeServerSettings = Effect.gen(function* () {
           for (const variable of instance.environment) {
             const secretName = providerEnvironmentSecretName({ instanceId, name: variable.name });
             if (!variable.sensitive) {
-              yield* secretStore.remove(secretName).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ServerSettingsError({
-                      settingsPath,
-                      detail: `failed to remove secret for provider instance '${instanceId}' environment variable '${variable.name}'`,
-                      cause,
-                    }),
+              obsoleteSecretRemovals.push(
+                secretStore.remove(secretName).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerSettingsError({
+                        settingsPath,
+                        detail: `failed to remove secret for provider instance '${instanceId}' environment variable '${variable.name}'`,
+                        cause,
+                      }),
+                  ),
                 ),
               );
               environment.push(redactProviderEnvironmentVariable(variable));
@@ -536,14 +550,16 @@ const makeServerSettings = Effect.gen(function* () {
                 );
                 environment.push({ ...variable, value: "", valueRedacted: true });
               } else {
-                yield* secretStore.remove(secretName).pipe(
-                  Effect.mapError(
-                    (cause) =>
-                      new ServerSettingsError({
-                        settingsPath,
-                        detail: `failed to remove secret for provider instance '${instanceId}' environment variable '${variable.name}'`,
-                        cause,
-                      }),
+                obsoleteSecretRemovals.push(
+                  secretStore.remove(secretName).pipe(
+                    Effect.mapError(
+                      (cause) =>
+                        new ServerSettingsError({
+                          settingsPath,
+                          detail: `failed to remove secret for provider instance '${instanceId}' environment variable '${variable.name}'`,
+                          cause,
+                        }),
+                    ),
                   ),
                 );
                 const { valueRedacted: _valueRedacted, ...withoutRedaction } = variable;
@@ -566,14 +582,16 @@ const makeServerSettings = Effect.gen(function* () {
             const secretName = providerConfigSecretName({ instanceId, key });
             const value = instance.config[key];
             if (typeof value !== "string" || value.length === 0) {
-              yield* secretStore.remove(secretName).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ServerSettingsError({
-                      settingsPath,
-                      detail: `failed to remove secret for provider instance '${instanceId}' config '${key}'`,
-                      cause,
-                    }),
+              obsoleteSecretRemovals.push(
+                secretStore.remove(secretName).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerSettingsError({
+                        settingsPath,
+                        detail: `failed to remove secret for provider instance '${instanceId}' config '${key}'`,
+                        cause,
+                      }),
+                  ),
                 ),
               );
               continue;
@@ -611,14 +629,16 @@ const makeServerSettings = Effect.gen(function* () {
           }
           const secretName = providerEnvironmentSecretName({ instanceId, name: variable.name });
           if (!nextEnvironmentSecretKeys.has(secretName)) {
-            yield* secretStore.remove(secretName).pipe(
-              Effect.mapError(
-                (cause) =>
-                  new ServerSettingsError({
-                    settingsPath,
-                    detail: `failed to remove stale secret for provider instance '${instanceId}' environment variable '${variable.name}'`,
-                    cause,
-                  }),
+            obsoleteSecretRemovals.push(
+              secretStore.remove(secretName).pipe(
+                Effect.mapError(
+                  (cause) =>
+                    new ServerSettingsError({
+                      settingsPath,
+                      detail: `failed to remove stale secret for provider instance '${instanceId}' environment variable '${variable.name}'`,
+                      cause,
+                    }),
+                ),
               ),
             );
           }
@@ -627,14 +647,16 @@ const makeServerSettings = Effect.gen(function* () {
           for (const key of SENSITIVE_PROVIDER_INSTANCE_CONFIG_KEYS) {
             const secretName = providerConfigSecretName({ instanceId, key });
             if (!nextConfigSecretKeys.has(secretName)) {
-              yield* secretStore.remove(secretName).pipe(
-                Effect.mapError(
-                  (cause) =>
-                    new ServerSettingsError({
-                      settingsPath,
-                      detail: `failed to remove stale secret for provider instance '${instanceId}' config '${key}'`,
-                      cause,
-                    }),
+              obsoleteSecretRemovals.push(
+                secretStore.remove(secretName).pipe(
+                  Effect.mapError(
+                    (cause) =>
+                      new ServerSettingsError({
+                        settingsPath,
+                        detail: `failed to remove stale secret for provider instance '${instanceId}' config '${key}'`,
+                        cause,
+                      }),
+                  ),
                 ),
               );
             }
@@ -643,8 +665,11 @@ const makeServerSettings = Effect.gen(function* () {
       }
 
       return {
-        ...next,
-        providerInstances: providerInstances as ServerSettings["providerInstances"],
+        settings: {
+          ...next,
+          providerInstances: providerInstances as ServerSettings["providerInstances"],
+        },
+        removeObsoleteSecrets: Effect.all(obsoleteSecretRemovals, { discard: true }),
       };
     });
 
@@ -711,11 +736,19 @@ const makeServerSettings = Effect.gen(function* () {
     }
     if (hasPlaintextProviderInstanceSecrets(decoded.value)) {
       // A previous build (or interrupted migration) left instance secrets in
-      // plaintext on disk. Move them into the secret store and rewrite the
-      // redacted settings file immediately instead of waiting for the next
-      // settings save.
-      const persisted = yield* persistProviderSecrets(decoded.value, decoded.value);
+      // plaintext on disk. Materialize existing redacted secrets first so the
+      // migration cannot mistake their empty on-disk markers for cleared
+      // values, move the plaintext into the secret store, rewrite the
+      // redacted settings file, and only then drop obsolete store entries so
+      // a failed write never loses a still-referenced secret.
+      const materialized = yield* materializeProviderSecrets(decoded.value);
+      const { settings: persisted, removeObsoleteSecrets } = yield* persistProviderSecrets(
+        materialized,
+        materialized,
+      );
       yield* writeSettingsAtomically(persisted);
+      yield* removeObsoleteSecrets;
+      return materialized;
     }
     return yield* materializeProviderSecrets(decoded.value);
   });
@@ -777,8 +810,12 @@ const makeServerSettings = Effect.gen(function* () {
         Effect.gen(function* () {
           const current = yield* Ref.get(settingsRef);
           const next = yield* normalizeSettings(settingsPath, current, patch);
-          const persisted = yield* persistProviderSecrets(current, next);
+          const { settings: persisted, removeObsoleteSecrets } = yield* persistProviderSecrets(
+            current,
+            next,
+          );
           yield* writeSettingsAtomically(persisted);
+          yield* removeObsoleteSecrets;
           yield* Ref.set(settingsRef, next);
           yield* emitChange(next);
           return resolveTextGenerationProvider(next);

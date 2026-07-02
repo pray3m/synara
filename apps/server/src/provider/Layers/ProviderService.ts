@@ -500,9 +500,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
     );
     let stopIdleRuntimeSession: ((threadId: ThreadId, generation: symbol) => void) | null = null;
 
-    const getAdapterForInstance = (instance: ResolvedProviderInstance) =>
+    const getAdapterForInstance = (
+      instance: ResolvedProviderInstance,
+      options?: { readonly allowDisabled?: boolean },
+    ) =>
       registry.getByInstance
-        ? registry.getByInstance(instance.instanceId)
+        ? registry.getByInstance(instance.instanceId, options)
         : registry.getByProvider(instance.driver);
 
     const getAdapterForBinding = (binding: ProviderRuntimeBinding) => {
@@ -603,6 +606,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
        * where the session's recorded options are the source of truth.
        */
       readonly providerOptionsPrecedence?: "instance" | "caller";
+      /**
+       * Disabled instances must not start new sessions, but stop/cleanup paths
+       * still need to resolve them to tear down runtimes and bindings that were
+       * created before the instance was disabled.
+       */
+      readonly allowDisabled?: boolean;
     }) =>
       Effect.gen(function* () {
         const explicitProvider = input.provider !== undefined;
@@ -631,7 +640,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
             `Requested provider '${provider}' does not match provider instance '${instance.instanceId}' driver '${instance.driver}'.`,
           );
         }
-        if (!instance.enabled) {
+        if (!instance.enabled && input.allowDisabled !== true) {
           return yield* toValidationError(
             input.operation,
             `Provider instance '${instance.instanceId}' is disabled.`,
@@ -1184,6 +1193,8 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
       readonly threadId: ThreadId;
       readonly operation: string;
       readonly allowRecovery: boolean;
+      /** Stop/cleanup paths must still route sessions of disabled instances. */
+      readonly allowDisabled?: boolean;
     }) =>
       Effect.gen(function* () {
         const bindingOption = yield* directory.getBinding(input.threadId);
@@ -1197,6 +1208,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
               operation: input.operation,
               provider: live.session.provider,
               providerInstanceId: live.session.providerInstanceId ?? live.session.provider,
+              ...(input.allowDisabled !== undefined ? { allowDisabled: input.allowDisabled } : {}),
             });
             return {
               adapter: live.adapter,
@@ -1215,8 +1227,12 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           operation: input.operation,
           ...providerKindConstraint(binding.provider),
           providerInstanceId: bindingProviderInstanceId,
+          ...(input.allowDisabled !== undefined ? { allowDisabled: input.allowDisabled } : {}),
         });
-        const adapter = yield* getAdapterForInstance(resolved.instance);
+        const adapter = yield* getAdapterForInstance(
+          resolved.instance,
+          input.allowDisabled !== undefined ? { allowDisabled: input.allowDisabled } : undefined,
+        );
         const providerAdapter = yield* registry.getByProvider(resolved.instance.driver);
         const activeSessions = yield* providerAdapter.listSessions();
         const activeSession = activeSessions.find((session) => session.threadId === input.threadId);
@@ -1802,6 +1818,7 @@ const makeProviderService = (options?: ProviderServiceLiveOptions) =>
           threadId: input.threadId,
           operation: "ProviderService.stopSession",
           allowRecovery: false,
+          allowDisabled: true,
         });
         if (routed.isActive) {
           yield* routed.adapter.stopSession(routed.threadId);

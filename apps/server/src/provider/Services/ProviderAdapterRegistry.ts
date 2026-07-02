@@ -20,9 +20,12 @@ import type { ProviderAdapterShape } from "./ProviderAdapter.ts";
 export interface ProviderAdapterRegistryShape {
   /**
    * Resolve an adapter facade for one configured provider instance.
+   * Disabled instances fail by default; stop/cleanup paths may opt in via
+   * `allowDisabled` to tear down sessions that outlived the instance toggle.
    */
   readonly getByInstance?: (
     instanceId: ProviderInstanceId,
+    options?: { readonly allowDisabled?: boolean },
   ) => Effect.Effect<ProviderAdapterShape<ProviderAdapterError>, ProviderUnsupportedError>;
 
   /**

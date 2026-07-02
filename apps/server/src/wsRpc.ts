@@ -10,13 +10,16 @@ import {
   WsRpcError,
   WsRpcGroup,
   type GitActionProgressEvent,
+  type ModelSelection,
   type OrchestrationEvent,
   type ProjectDevServerEvent,
+  type ProviderStartOptions,
   type OrchestrationShellStreamEvent,
   type OrchestrationThreadStreamItem,
   type ServerConfigStreamEvent,
   type ServerDiagnosticsResult,
   type ServerLifecycleStreamEvent,
+  type ServerSettings,
 } from "@t3tools/contracts";
 import { clamp } from "effect/Number";
 import { Effect, FileSystem, Layer, Option, Path, Queue, Schema, Stream } from "effect";
@@ -260,6 +263,46 @@ function toWsRpcError(cause: unknown, fallbackMessage: string) {
           cause instanceof Error && cause.message.length > 0 ? cause.message : fallbackMessage,
         cause,
       });
+}
+
+// Legacy/native callers may pin a text-generation model via the model-only
+// `textGenerationModel` field. Downstream routing prefers a model selection
+// over the raw model, so the global settings selection must only be injected
+// when the caller supplied neither — injecting it alongside an explicit model
+// would silently reroute the request to the globally configured model.
+function resolveTextGenerationRouting(
+  settings: ServerSettings,
+  input: {
+    readonly textGenerationModel?: string | undefined;
+    readonly textGenerationModelSelection?: ModelSelection | undefined;
+    readonly providerOptions?: ProviderStartOptions | undefined;
+  },
+): {
+  readonly model: string;
+  readonly modelSelection: ModelSelection | undefined;
+  readonly providerOptions: ProviderStartOptions | undefined;
+} {
+  const explicitModel = input.textGenerationModel?.trim();
+  if (!input.textGenerationModelSelection && explicitModel) {
+    return {
+      model: explicitModel,
+      modelSelection: undefined,
+      providerOptions: input.providerOptions,
+    };
+  }
+  const modelSelection =
+    input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
+  const instance = resolveProviderInstance(settings, {
+    instanceId: resolveModelSelectionInstanceId(modelSelection),
+  });
+  return {
+    model: explicitModel || modelSelection.model,
+    modelSelection,
+    providerOptions: mergeProviderStartOptions(
+      input.providerOptions,
+      instance ? providerStartOptionsFromInstance(instance) : undefined,
+    ),
+  };
 }
 
 const failLiveUiStreamForSnapshotResync = (report: LiveUiStreamDropReport) =>
@@ -749,19 +792,13 @@ export const makeWsRpcLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const settings = yield* serverSettings.getSettings;
-              const modelSelection =
-                input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
-              const instance = resolveProviderInstance(settings, {
-                instanceId: resolveModelSelectionInstanceId(modelSelection),
-              });
-              const providerOptions = mergeProviderStartOptions(
-                input.providerOptions,
-                instance ? providerStartOptionsFromInstance(instance) : undefined,
-              );
+              const routing = resolveTextGenerationRouting(settings, input);
               return yield* gitManager.summarizeDiff({
                 ...input,
-                textGenerationModelSelection: modelSelection,
-                ...(providerOptions ? { providerOptions } : {}),
+                ...(routing.modelSelection
+                  ? { textGenerationModelSelection: routing.modelSelection }
+                  : {}),
+                ...(routing.providerOptions ? { providerOptions: routing.providerOptions } : {}),
               });
             }),
             "Failed to summarize diff",
@@ -776,19 +813,13 @@ export const makeWsRpcLayer = () =>
             Stream.callback<GitActionProgressEvent, WsRpcError>((queue) =>
               Effect.gen(function* () {
                 const settings = yield* serverSettings.getSettings;
-                const modelSelection =
-                  input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
-                const instance = resolveProviderInstance(settings, {
-                  instanceId: resolveModelSelectionInstanceId(modelSelection),
-                });
-                const providerOptions = mergeProviderStartOptions(
-                  input.providerOptions,
-                  instance ? providerStartOptionsFromInstance(instance) : undefined,
-                );
+                const routing = resolveTextGenerationRouting(settings, input);
                 return {
                   ...input,
-                  textGenerationModelSelection: modelSelection,
-                  ...(providerOptions ? { providerOptions } : {}),
+                  ...(routing.modelSelection
+                    ? { textGenerationModelSelection: routing.modelSelection }
+                    : {}),
+                  ...(routing.providerOptions ? { providerOptions: routing.providerOptions } : {}),
                 };
               }).pipe(
                 Effect.flatMap((runInput) =>
@@ -1056,24 +1087,16 @@ export const makeWsRpcLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const settings = yield* serverSettings.getSettings;
-              const modelSelection =
-                input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
-              const fallbackInstance = resolveProviderInstance(settings, {
-                instanceId: resolveModelSelectionInstanceId(modelSelection),
-              });
-              const providerOptions = mergeProviderStartOptions(
-                input.providerOptions,
-                fallbackInstance ? providerStartOptionsFromInstance(fallbackInstance) : undefined,
-              );
+              const routing = resolveTextGenerationRouting(settings, input);
               return yield* textGeneration.generateThreadRecap({
                 cwd: input.cwd,
                 newMaterial: input.newMaterial,
                 ...(input.previousRecap ? { previousRecap: input.previousRecap } : {}),
                 ...(input.currentState ? { currentState: input.currentState } : {}),
                 ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
-                model: input.textGenerationModel ?? modelSelection.model,
-                modelSelection,
-                ...(providerOptions ? { providerOptions } : {}),
+                model: routing.model,
+                ...(routing.modelSelection ? { modelSelection: routing.modelSelection } : {}),
+                ...(routing.providerOptions ? { providerOptions: routing.providerOptions } : {}),
               });
             }),
             "Failed to generate thread recap",
@@ -1082,24 +1105,16 @@ export const makeWsRpcLayer = () =>
           rpcEffect(
             Effect.gen(function* () {
               const settings = yield* serverSettings.getSettings;
-              const modelSelection =
-                input.textGenerationModelSelection ?? settings.textGenerationModelSelection;
-              const fallbackInstance = resolveProviderInstance(settings, {
-                instanceId: resolveModelSelectionInstanceId(modelSelection),
-              });
-              const providerOptions = mergeProviderStartOptions(
-                input.providerOptions,
-                fallbackInstance ? providerStartOptionsFromInstance(fallbackInstance) : undefined,
-              );
+              const routing = resolveTextGenerationRouting(settings, input);
               return yield* textGeneration.generateAutomationIntent({
                 cwd: input.cwd,
                 message: input.message,
                 ...(input.defaultMode ? { defaultMode: input.defaultMode } : {}),
                 nowIso: input.nowIso,
                 ...(input.codexHomePath ? { codexHomePath: input.codexHomePath } : {}),
-                model: input.textGenerationModel ?? modelSelection.model,
-                modelSelection,
-                ...(providerOptions ? { providerOptions } : {}),
+                model: routing.model,
+                ...(routing.modelSelection ? { modelSelection: routing.modelSelection } : {}),
+                ...(routing.providerOptions ? { providerOptions: routing.providerOptions } : {}),
               });
             }),
             "Failed to generate automation intent",
