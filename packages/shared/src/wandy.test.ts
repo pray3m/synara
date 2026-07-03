@@ -415,7 +415,6 @@ describe("resolveWandyLauncherPath", () => {
 describe("standalone launcher runtime tables", () => {
   const PLATFORM_KEYS = [
     ["darwin", "arm64"],
-    ["darwin", "x64"],
     ["linux", "arm64"],
     ["linux", "x64"],
     ["win32", "arm64"],
@@ -461,6 +460,24 @@ describe("standalone launcher runtime tables", () => {
         wandyRuntimeRelativeParts(platform, arch),
         `wandyMcp.mjs entry for ${platform}-${arch} drifted from the shared table`,
       );
+    }
+  });
+
+  it("does not advertise the arm64-only macOS bundle on Intel macOS", () => {
+    assert.equal(wandyRuntimeRelativeParts("darwin", "x64"), null);
+  });
+
+  it("standalone launchers also omit Intel macOS until a compatible bundle ships", () => {
+    const launcherSources = [
+      readFileSync(path.resolve(import.meta.dirname, "../../wandy/bin/wandy"), "utf8"),
+      readFileSync(
+        path.resolve(import.meta.dirname, "../../../apps/desktop/scripts/wandyMcp.mjs"),
+        "utf8",
+      ),
+    ];
+
+    for (const source of launcherSources) {
+      assert.doesNotMatch(source, /"darwin-x64"/);
     }
   });
 });

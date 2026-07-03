@@ -504,7 +504,6 @@ export function resolveWandyEnabledFromSettings(input: {
 // and apps/desktop/scripts/wandyMcp.mjs.
 const PLATFORM_RUNTIME_RELATIVE_PATHS: Record<string, readonly string[]> = {
   "darwin-arm64": ["dist", WANDY_APP_BUNDLE_NAME, ...WANDY_MACOS_APP_EXECUTABLE_PARTS],
-  "darwin-x64": ["dist", WANDY_APP_BUNDLE_NAME, ...WANDY_MACOS_APP_EXECUTABLE_PARTS],
   "linux-arm64": ["dist", "linux", "arm64", "wandy"],
   "linux-x64": ["dist", "linux", "amd64", "wandy"],
   "win32-arm64": ["dist", "windows", "arm64", "wandy.exe"],

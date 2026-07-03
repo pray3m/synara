@@ -9,8 +9,20 @@
     "wandy-mcp": "bin/wandy-mcp"
   },
   "files": [
+    ".agents/plugins/marketplace.json",
     "bin/",
     "dist/",
+    "plugins/wandy/.codex-plugin/",
+    "plugins/wandy/.mcp.json",
+    "plugins/wandy/assets/",
+    "plugins/wandy/scripts/",
+    "scripts/install-claude-mcp.sh",
+    "scripts/install-codex-mcp.sh",
+    "scripts/install-codex-plugin.sh",
+    "scripts/install-config-helper.mjs",
+    "scripts/install-gemini-mcp.sh",
+    "scripts/install-opencode-mcp.sh",
+    "scripts/postinstall.mjs",
     "LICENSE"
   ],
   "type": "commonjs",

@@ -13,7 +13,6 @@ import {
   GEMINI_3_MODEL_CAPABILITIES,
   geminiCapabilitiesForModel,
 } from "@t3tools/shared/model";
-import { buildWandyAcpMcpServers } from "@t3tools/shared/wandy";
 import { prepareWindowsSafeProcess } from "@t3tools/shared/windowsProcess";
 import { Effect } from "effect";
 import { asNumber, asRecord, trimToUndefined } from "./geminiValue.ts";
@@ -168,6 +167,18 @@ export function buildGeminiProbeEnv(env: NodeJS.ProcessEnv = process.env): NodeJ
     BROWSER: GEMINI_BROWSER_BLOCKLIST_VALUE,
     CI: "true",
     DEBIAN_FRONTEND: "noninteractive",
+  };
+}
+
+export function buildGeminiProbeSessionNewParams(cwd: string): {
+  readonly cwd: string;
+  readonly mcpServers: readonly [];
+} {
+  return {
+    cwd,
+    // Capability probes power status/list-model checks; do not start desktop
+    // automation helpers or other session-only MCP servers from this path.
+    mcpServers: [],
   };
 }
 
@@ -434,10 +445,7 @@ export const probeGeminiCapabilities = (input: {
 
             if (!sessionNewRequested) {
               sessionNewRequested = true;
-              sendRequest(2, "session/new", {
-                cwd: input.cwd,
-                mcpServers: buildWandyAcpMcpServers(),
-              });
+              sendRequest(2, "session/new", buildGeminiProbeSessionNewParams(input.cwd));
             }
             return;
           }

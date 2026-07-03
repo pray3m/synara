@@ -208,7 +208,22 @@ interface StagePackageJson {
 
 const WANDY_PACKAGE_NAME = "@t3tools/wandy";
 const WANDY_STAGE_RELATIVE_DIR = "packages/wandy";
-const WANDY_RUNTIME_PACKAGE_ENTRIES = [["package.json"], ["bin"], ["LICENSE"]] as const;
+const WANDY_RUNTIME_PACKAGE_ENTRIES = [
+  ["package.json"],
+  [".agents", "plugins", "marketplace.json"],
+  ["bin"],
+  ["plugins", "wandy", ".codex-plugin"],
+  ["plugins", "wandy", ".mcp.json"],
+  ["plugins", "wandy", "assets"],
+  ["plugins", "wandy", "scripts"],
+  ["scripts", "install-claude-mcp.sh"],
+  ["scripts", "install-codex-mcp.sh"],
+  ["scripts", "install-codex-plugin.sh"],
+  ["scripts", "install-config-helper.mjs"],
+  ["scripts", "install-gemini-mcp.sh"],
+  ["scripts", "install-opencode-mcp.sh"],
+  ["LICENSE"],
+] as const;
 
 const BUILD_PLATFORM_TO_NODE_PLATFORM: Record<typeof BuildPlatform.Type, NodeJS.Platform> = {
   mac: "darwin",

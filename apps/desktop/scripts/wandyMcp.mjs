@@ -15,7 +15,6 @@ const requireFromHere = createRequire(import.meta.url);
 // Keep the two tables in sync.
 const PLATFORM_RUNTIME_RELATIVE_PATHS = {
   "darwin-arm64": ["dist", "Wandy.app", "Contents", "MacOS", "Wandy"],
-  "darwin-x64": ["dist", "Wandy.app", "Contents", "MacOS", "Wandy"],
   "linux-arm64": ["dist", "linux", "arm64", "wandy"],
   "linux-x64": ["dist", "linux", "amd64", "wandy"],
   "win32-arm64": ["dist", "windows", "arm64", "wandy.exe"],

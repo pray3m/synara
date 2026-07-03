@@ -71,6 +71,10 @@ import { hardenElectronUpdater } from "./electronUpdaterSecurity";
 import { ServerListeningDetector } from "./serverListeningDetector";
 import { syncShellEnvironment } from "./syncShellEnvironment";
 import {
+  readDesktopEnableWandySetting,
+  resolveDesktopServerSettingsPath,
+} from "./desktopServerSettings";
+import {
   type DownloadProgressSample,
   getAutoUpdateDisabledReason,
   getDownloadStallTimeoutMessage,
@@ -168,6 +172,7 @@ const BASE_DIR =
   process.env.T3CODE_HOME?.trim() ||
   Path.join(OS.homedir(), ".synara");
 const STATE_DIR = Path.join(BASE_DIR, "userdata");
+const SERVER_SETTINGS_PATH = resolveDesktopServerSettingsPath(BASE_DIR);
 const DESKTOP_SCHEME = "t3";
 const ROOT_DIR = Path.resolve(__dirname, "../../..");
 const isDevelopment = Boolean(process.env.VITE_DEV_SERVER_URL);
@@ -828,24 +833,61 @@ function resolveDesktopWandyStableAppDir(): string {
   return Path.join(BASE_DIR, "wandy-app");
 }
 
-function resolveWandyLauncherPath(): string | null {
-  if (wandyLauncherPathCache !== undefined) {
-    return wandyLauncherPathCache;
-  }
+function isWandyAllowedByDesktopEnv(): boolean {
+  return !isWandyExplicitlyDisabledInEnv(process.env);
+}
 
-  // Skip stable-helper install/fingerprint work entirely when the operator
-  // disabled Wandy; backendEnv() calls this on every backend (re)start.
-  if (isWandyExplicitlyDisabledInEnv(process.env)) {
-    wandyLauncherPathCache = null;
-    return wandyLauncherPathCache;
-  }
+function readDesktopWandySettingEnabled(): boolean {
+  return readDesktopEnableWandySetting(SERVER_SETTINGS_PATH);
+}
 
+function shouldRunDesktopWandyPreflight(): boolean {
+  return isWandyAllowedByDesktopEnv() && readDesktopWandySettingEnabled();
+}
+
+function resolveBundledWandyLauncherPath(): string | null {
   const fallbackPackageRoots = resolveWandyPackageRoots();
-  const bundledLauncherPath = resolveSharedWandyLauncherPath({
+  return resolveSharedWandyLauncherPath({
     env: {},
     fallbackPackageRoots,
     preferBundled: true,
   });
+}
+
+function resolveBackendWandyLauncherPath(): string | null {
+  if (!isWandyAllowedByDesktopEnv()) {
+    return null;
+  }
+
+  if (readDesktopWandySettingEnabled()) {
+    return resolveWandyLauncherPath();
+  }
+
+  // The backend keeps its boot-env allowance so users can re-enable Wandy
+  // without restarting, but disabled launches must not install/fingerprint or
+  // warm the stable helper. A bundled path is enough for a later new session.
+  return resolveBundledWandyLauncherPath();
+}
+
+function resolveBackendWandyEnabledEnv(): string {
+  if (!isWandyAllowedByDesktopEnv()) {
+    return "0";
+  }
+
+  return process.env.SYNARA_ENABLE_WANDY ?? "1";
+}
+
+function resolveWandyLauncherPath(): string | null {
+  if (!shouldRunDesktopWandyPreflight()) {
+    return null;
+  }
+
+  if (wandyLauncherPathCache !== undefined) {
+    return wandyLauncherPathCache;
+  }
+
+  const fallbackPackageRoots = resolveWandyPackageRoots();
+  const bundledLauncherPath = resolveBundledWandyLauncherPath();
 
   if (app.isPackaged) {
     const stableResult = ensureStableWandyHelper({
@@ -891,7 +933,7 @@ function resolveWandyLauncherPath(): string | null {
 }
 
 function warmWandyHelper(): void {
-  if (wandyWarmupStarted || isWandyExplicitlyDisabledInEnv(process.env)) {
+  if (wandyWarmupStarted || !shouldRunDesktopWandyPreflight()) {
     return;
   }
 
@@ -2115,7 +2157,7 @@ function backendNodeArgs(): string[] {
 }
 
 function backendEnv(): NodeJS.ProcessEnv {
-  const wandyLauncherPath = resolveWandyLauncherPath();
+  const wandyLauncherPath = resolveBackendWandyLauncherPath();
   const wandyStableAppDir = resolveDesktopWandyStableAppDir();
   return {
     ...process.env,
@@ -2133,7 +2175,7 @@ function backendEnv(): NodeJS.ProcessEnv {
     T3CODE_AUTH_TOKEN: backendAuthToken,
     SYNARA_HOME: BASE_DIR,
     [T3CODE_BROWSER_USE_PIPE_ENV]: SYNARA_BROWSER_USE_PIPE_PATH,
-    SYNARA_ENABLE_WANDY: process.env.SYNARA_ENABLE_WANDY ?? "1",
+    SYNARA_ENABLE_WANDY: resolveBackendWandyEnabledEnv(),
     [SYNARA_WANDY_STABLE_APP_DIR_ENV]: wandyStableAppDir,
     ...(wandyLauncherPath ? { SYNARA_WANDY_LAUNCHER_PATH: wandyLauncherPath } : {}),
   };

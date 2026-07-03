@@ -31,12 +31,6 @@ const runtimeTargets = [
     executablePath: ["dist", appBundleName, "Contents", "MacOS", appExecutableName],
   },
   {
-    os: "darwin",
-    cpu: "x64",
-    kind: "macos-app",
-    executablePath: ["dist", appBundleName, "Contents", "MacOS", appExecutableName],
-  },
-  {
     os: "linux",
     cpu: "arm64",
     kind: "binary",

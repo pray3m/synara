@@ -13,15 +13,6 @@ const platformPackages = {
       "Wandy"
     ]
   },
-  "darwin-x64": {
-    "executablePath": [
-      "dist",
-      "Wandy.app",
-      "Contents",
-      "MacOS",
-      "Wandy"
-    ]
-  },
   "linux-arm64": {
     "executablePath": [
       "dist",
