@@ -61,6 +61,8 @@ export function useComposerCommandMenuItems(input: {
   canOfferReviewCommand: boolean;
   canOfferForkCommand: boolean;
   canOfferSideCommand: boolean;
+  canOfferExportCommand: boolean;
+  surfaceAppSlashCommands?: ReadonlySet<string>;
   dynamicAgents: readonly { name: string; displayName: string; description?: string }[];
 }): ComposerCommandItem[] {
   const {
@@ -76,6 +78,8 @@ export function useComposerCommandMenuItems(input: {
     canOfferReviewCommand,
     canOfferForkCommand,
     canOfferSideCommand,
+    canOfferExportCommand,
+    surfaceAppSlashCommands,
     dynamicAgents,
   } = input;
 
@@ -163,11 +167,16 @@ export function useComposerCommandMenuItems(input: {
         canOfferReviewCommand,
         canOfferForkCommand,
         canOfferSideCommand,
+        canOfferExportCommand,
         providerNativeCommandNames: providerNativeCommands.map((command) => command.name),
       });
+      const visibleAppCommands = surfaceAppSlashCommands
+        ? availableCommands.filter((command) => surfaceAppSlashCommands.has(command))
+        : availableCommands;
+      const visibleAppCommandSet = new Set(visibleAppCommands);
       const builtInItems = filterComposerSlashCommands(
         composerTrigger.query,
-        availableCommands,
+        visibleAppCommands,
       ).map((definition) => ({
         id: `slash:${definition.command}`,
         type: "slash-command" as const,
@@ -178,7 +187,10 @@ export function useComposerCommandMenuItems(input: {
       }));
       const providerCommandItems = providerNativeCommands
         .filter(
-          (command) => !shouldHideProviderNativeCommandFromComposerMenu(provider, command.name),
+          (command) =>
+            !shouldHideProviderNativeCommandFromComposerMenu(provider, command.name, {
+              availableAppCommands: visibleAppCommandSet,
+            }),
         )
         .map((command) => ({
           command,
@@ -251,6 +263,7 @@ export function useComposerCommandMenuItems(input: {
     canOfferCompactCommand,
     canOfferReviewCommand,
     canOfferSideCommand,
+    canOfferExportCommand,
     composerTrigger,
     dynamicAgents,
     provider,
@@ -258,6 +271,7 @@ export function useComposerCommandMenuItems(input: {
     providerNativeCommands,
     providerSkills,
     searchableModelOptions,
+    surfaceAppSlashCommands,
     supportsFastSlashCommand,
     workspaceEntries,
   ]);

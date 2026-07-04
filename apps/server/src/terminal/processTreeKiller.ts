@@ -31,7 +31,7 @@ export interface ProcessTreeKiller {
     rootPid: number;
     signal: TerminalKillSignal;
     tree: CapturedProcessTree;
-    includeRootTree?: boolean;
+    includeRootTree?: boolean | undefined;
     onError: (error: Error, context: { pid: number; source: "tree-kill" | "captured" }) => void;
   }): void;
 }
