@@ -81,6 +81,25 @@ export function resolveCodexHomeOverlayAccountSegment(
   return `${label}-${digest}`;
 }
 
+function shouldUseDirectAccountOverlay(input: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly sourceHomePath: string;
+  readonly explicitHomePath?: string | undefined;
+  readonly accountId?: string | undefined;
+}): boolean {
+  const accountSegment = resolveCodexHomeOverlayAccountSegment({
+    homePath: input.sourceHomePath,
+    ...(input.accountId ? { accountId: input.accountId } : {}),
+  });
+  if (!accountSegment) {
+    return false;
+  }
+  if (!input.explicitHomePath?.trim()) {
+    return true;
+  }
+  return path.resolve(input.sourceHomePath) === path.resolve(resolveBaseCodexHomePath(input.env));
+}
+
 /**
  * Returns the home directory that the codex app-server child process actually
  * writes under. This is the overlay home when Synara wraps Codex with the
@@ -94,20 +113,27 @@ export function resolveActiveCodexHomeWritePath(input: CodexHomePathsInput = {})
     if (input.shadowHomePath) {
       return resolveBaseCodexHomePath(env, input.shadowHomePath);
     }
-    if (input.homePath?.trim()) {
-      return source;
-    }
-    // Mirrors buildCodexProcessEnv: accountId-only instances run against
-    // their per-account home even when the managed overlay is skipped.
-    const directAccountSegment = resolveCodexHomeOverlayAccountSegment({
-      homePath: source,
-      ...(input.accountId ? { accountId: input.accountId } : {}),
-    });
-    if (directAccountSegment) {
-      const accountHome = resolveDpCodeCodexHomeOverlayPath(env, source, directAccountSegment);
+    if (
+      shouldUseDirectAccountOverlay({
+        env,
+        sourceHomePath: source,
+        explicitHomePath: input.homePath,
+        accountId: input.accountId,
+      })
+    ) {
+      const directAccountSegment = resolveCodexHomeOverlayAccountSegment({
+        homePath: source,
+        ...(input.accountId ? { accountId: input.accountId } : {}),
+      });
+      const accountHome = directAccountSegment
+        ? resolveDpCodeCodexHomeOverlayPath(env, source, directAccountSegment)
+        : source;
       if (path.resolve(source) !== path.resolve(accountHome)) {
         return accountHome;
       }
+    }
+    if (input.homePath?.trim()) {
+      return source;
     }
     return source;
   }

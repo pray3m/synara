@@ -324,12 +324,12 @@ function dropStaleAccountPrivateStateSymlinks(accountHomePath: string): void {
 // uses, so login state survives toggling the plugin sentinel.
 function prepareDirectCodexAccountHome(
   env: NodeJS.ProcessEnv,
-  accountId: string | undefined,
+  input: { readonly sourceHomePath?: string; readonly accountId?: string | undefined },
 ): string | undefined {
-  const sourceHomePath = resolveBaseCodexHomePath(env);
+  const sourceHomePath = input.sourceHomePath ?? resolveBaseCodexHomePath(env);
   const accountSegment = resolveCodexHomeOverlayAccountSegment({
     homePath: sourceHomePath,
-    ...(accountId ? { accountId } : {}),
+    ...(input.accountId ? { accountId: input.accountId } : {}),
   });
   if (!accountSegment) {
     return undefined;
@@ -364,6 +364,25 @@ function prepareDirectCodexShadowHome(
   return shadowHomePath;
 }
 
+function shouldUseDirectCodexAccountHome(input: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly sourceHomePath: string;
+  readonly explicitHomePath?: string | undefined;
+  readonly accountId?: string | undefined;
+}): boolean {
+  const accountSegment = resolveCodexHomeOverlayAccountSegment({
+    homePath: input.sourceHomePath,
+    ...(input.accountId ? { accountId: input.accountId } : {}),
+  });
+  if (!accountSegment) {
+    return false;
+  }
+  if (!input.explicitHomePath?.trim()) {
+    return true;
+  }
+  return path.resolve(input.sourceHomePath) === path.resolve(resolveBaseCodexHomePath(input.env));
+}
+
 export function buildCodexProcessEnv(
   input: {
     readonly env?: NodeJS.ProcessEnv;
@@ -375,6 +394,7 @@ export function buildCodexProcessEnv(
   } = {},
 ): NodeJS.ProcessEnv {
   const baseEnv = { ...(input.env ?? process.env) };
+  const directSourceHomePath = resolveBaseCodexHomePath(baseEnv, input.homePath);
   const overlayHomePath = shouldDisableDpCodeBrowserPlugin(baseEnv)
     ? prepareDpCodeCodexHomeOverlay({
         env: baseEnv,
@@ -394,9 +414,19 @@ export function buildCodexProcessEnv(
             ...(input.homePath ? { homePath: input.homePath } : {}),
             shadowHomePath: input.shadowHomePath,
           })
-        : input.homePath
-          ? resolveBaseCodexHomePath(baseEnv, input.homePath)
-          : prepareDirectCodexAccountHome(baseEnv, input.accountId);
+        : shouldUseDirectCodexAccountHome({
+              env: baseEnv,
+              sourceHomePath: directSourceHomePath,
+              explicitHomePath: input.homePath,
+              accountId: input.accountId,
+            })
+          ? prepareDirectCodexAccountHome(baseEnv, {
+              sourceHomePath: directSourceHomePath,
+              accountId: input.accountId,
+            })
+          : input.homePath
+            ? directSourceHomePath
+            : undefined;
   const effectiveEnv =
     overlayHomePath || directAccountHomePath
       ? { ...baseEnv, CODEX_HOME: overlayHomePath ?? directAccountHomePath }

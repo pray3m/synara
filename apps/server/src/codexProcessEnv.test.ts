@@ -173,6 +173,57 @@ describe("buildCodexProcessEnv account overlays", () => {
     assert.strictEqual(defaultEnv.CODEX_HOME, fixture.homePath);
   });
 
+  it("keeps explicit shared-home accounts isolated when the browser plugin is enabled", () => {
+    const fixture = makeAccountFixture({ shadowAuth: "missing" });
+    const pluginEnabledEnv = {
+      ...fixture.env,
+      CODEX_HOME: fixture.homePath,
+      DPCODE_DISABLE_CODEX_DPCODE_BROWSER_PLUGIN: "0",
+    };
+    writeFileSync(path.join(fixture.homePath, "config.toml"), 'model = "gpt-5.4"\n', "utf8");
+
+    const env = buildCodexProcessEnv({
+      env: pluginEnabledEnv,
+      homePath: fixture.homePath,
+      accountId: "work",
+      platform: "win32",
+    });
+
+    const accountHomePath = env.CODEX_HOME;
+    assert.ok(accountHomePath);
+    assert.notStrictEqual(path.resolve(accountHomePath), path.resolve(fixture.homePath));
+    assert.ok(lstatSync(accountHomePath).isDirectory());
+    assert.throws(() => lstatSync(path.join(accountHomePath, "auth.json")));
+    assert.strictEqual(
+      readFileSync(path.join(accountHomePath, "config.toml"), "utf8"),
+      'model = "gpt-5.4"\n',
+    );
+  });
+
+  it("keeps dedicated explicit account homes direct when the browser plugin is enabled", () => {
+    const fixture = makeAccountFixture({ shadowAuth: "missing" });
+    const dedicatedHomePath = path.join(makeTempRoot(), "codex-work-home");
+    mkdirSync(dedicatedHomePath, { recursive: true });
+    writeFileSync(path.join(dedicatedHomePath, "auth.json"), '{"account":"work"}', "utf8");
+
+    const env = buildCodexProcessEnv({
+      env: {
+        ...fixture.env,
+        CODEX_HOME: fixture.homePath,
+        DPCODE_DISABLE_CODEX_DPCODE_BROWSER_PLUGIN: "0",
+      },
+      homePath: dedicatedHomePath,
+      accountId: "work",
+      platform: "win32",
+    });
+
+    assert.strictEqual(env.CODEX_HOME, dedicatedHomePath);
+    assert.strictEqual(
+      readFileSync(path.join(dedicatedHomePath, "auth.json"), "utf8"),
+      '{"account":"work"}',
+    );
+  });
+
   it("rejects a symlinked shadow home when the browser plugin is enabled", () => {
     const fixture = makeAccountFixture({ shadowAuth: "missing" });
     const aliasedShadowHome = path.join(path.dirname(fixture.shadowHomePath), "codex-shadow-alias");
