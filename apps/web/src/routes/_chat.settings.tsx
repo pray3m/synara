@@ -108,6 +108,8 @@ import { isElectron } from "../env";
 import { useTheme } from "../hooks/useTheme";
 import { isUiDensity } from "../lib/appDensity";
 import { CentralIcon } from "../lib/central-icons";
+import { resolveProviderDiscoveryCwd } from "../lib/providerDiscovery";
+import { providerModelsQueryOptions } from "../lib/providerDiscoveryReactQuery";
 import { gitRemoveWorktreeMutationOptions } from "../lib/gitReactQuery";
 import {
   deleteArchivedThreadFromClient,
@@ -637,6 +639,28 @@ function SettingsRouteView() {
   const serverSettingsQuery = useQuery(serverSettingsQueryOptions());
   const serverWorktreesQuery = useQuery(serverWorktreesQueryOptions());
   const removeWorktreeMutation = useMutation(gitRemoveWorktreeMutationOptions({ queryClient }));
+  const providerModelDiscoveryCwd = resolveProviderDiscoveryCwd({
+    activeThreadWorktreePath: null,
+    activeProjectCwd: null,
+    serverCwd: serverConfigQuery.data?.cwd ?? null,
+  });
+  const shouldDiscoverGitTextGenerationModels = activeSection === "models";
+  const kiloDynamicModelsQuery = useQuery(
+    providerModelsQueryOptions({
+      provider: "kilo",
+      binaryPath: settings.kiloBinaryPath || null,
+      cwd: providerModelDiscoveryCwd,
+      enabled: shouldDiscoverGitTextGenerationModels,
+    }),
+  );
+  const openCodeDynamicModelsQuery = useQuery(
+    providerModelsQueryOptions({
+      provider: "opencode",
+      binaryPath: settings.openCodeBinaryPath || null,
+      cwd: providerModelDiscoveryCwd,
+      enabled: shouldDiscoverGitTextGenerationModels,
+    }),
+  );
   const removeDeletedThreadFromClientState = useStore(
     (store) => store.removeDeletedThreadFromClientState,
   );
@@ -867,11 +891,17 @@ function SettingsRouteView() {
         customOpenCodeModels,
         textGenerationModel,
         textGenerationProvider,
+        runtimeModelsByProvider: {
+          kilo: kiloDynamicModelsQuery.data?.models ?? [],
+          opencode: openCodeDynamicModelsQuery.data?.models ?? [],
+        },
       }),
     [
       customCodexModels,
       customKiloModels,
       customOpenCodeModels,
+      kiloDynamicModelsQuery.data?.models,
+      openCodeDynamicModelsQuery.data?.models,
       textGenerationModel,
       textGenerationProvider,
     ],

@@ -117,6 +117,55 @@ describe("getGitTextGenerationModelOptions", () => {
     expect(options.some((option) => option.slug === "openrouter/gpt-oss-120b")).toBe(true);
   });
 
+  it("uses runtime-discovered Kilo and OpenCode models for git writing settings", () => {
+    const options = getGitTextGenerationModelOptions({
+      customCodexModels: [],
+      customKiloModels: ["custom/kilo-model"],
+      customOpenCodeModels: ["openrouter/custom-opencode-model"],
+      textGenerationModel: "gpt-5.4-mini",
+      textGenerationProvider: "codex",
+      runtimeModelsByProvider: {
+        kilo: [
+          { slug: "kilo/kilo-auto/free", name: "Kilo Auto Free" },
+          {
+            slug: "anthropic/claude-sonnet-4-5",
+            name: "Claude Sonnet 4.5",
+            upstreamProviderId: "anthropic",
+            upstreamProviderName: "Anthropic",
+          },
+        ],
+        opencode: [
+          {
+            slug: "anthropic/claude-sonnet-4-5",
+            name: "Claude Sonnet 4.5",
+            upstreamProviderId: "anthropic",
+            upstreamProviderName: "Anthropic",
+          },
+          {
+            slug: "openrouter/horizon-beta",
+            name: "Horizon Beta",
+            upstreamProviderId: "openrouter",
+            upstreamProviderName: "OpenRouter",
+          },
+        ],
+      },
+    });
+
+    expect(
+      options.filter((option) => option.provider === "kilo").map((option) => option.slug),
+    ).toEqual(["kilo/kilo-auto/free", "anthropic/claude-sonnet-4-5", "custom/kilo-model"]);
+    expect(
+      options.filter((option) => option.provider === "opencode").map((option) => option.slug),
+    ).toEqual([
+      "anthropic/claude-sonnet-4-5",
+      "openrouter/horizon-beta",
+      "openrouter/custom-opencode-model",
+    ]);
+    expect(
+      options.some((option) => option.provider === "opencode" && option.slug === "openai/gpt-5"),
+    ).toBe(false);
+  });
+
   it("preserves a currently selected transient git writing model", () => {
     const options = getGitTextGenerationModelOptions({
       customCodexModels: [],

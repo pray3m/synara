@@ -24,7 +24,11 @@ import {
 } from "@t3tools/shared/model";
 import { useLocalStorage } from "./hooks/useLocalStorage";
 import { EnvMode } from "./components/BranchToolbar.logic";
-import { formatProviderModelOptionName, type ProviderModelOption } from "./providerModelOptions";
+import {
+  formatProviderModelOptionName,
+  mergeDynamicModelOptions,
+  type ProviderModelOption,
+} from "./providerModelOptions";
 import {
   DEFAULT_PROVIDER_ORDER,
   normalizeHiddenProviders,
@@ -230,6 +234,17 @@ export interface AppModelOption extends ProviderModelOption {
   provider: ProviderKind;
   isCustom: boolean;
 }
+
+type GitTextGenerationRuntimeProvider = Extract<ProviderKind, "kilo" | "opencode">;
+type GitTextGenerationRuntimeModel = {
+  readonly slug: string;
+  readonly name?: string | null | undefined;
+  readonly upstreamProviderId?: string | null | undefined;
+  readonly upstreamProviderName?: string | null | undefined;
+};
+type GitTextGenerationRuntimeModelsByProvider = Partial<
+  Record<GitTextGenerationRuntimeProvider, ReadonlyArray<GitTextGenerationRuntimeModel>>
+>;
 
 const DEFAULT_APP_SETTINGS = AppSettingsSchema.makeUnsafe({});
 let serverSettingsMigrationInFlight = false;
@@ -773,6 +788,34 @@ export function getAppModelOptions(
   return options;
 }
 
+function mergeGitTextGenerationRuntimeModels(
+  provider: GitTextGenerationRuntimeProvider,
+  staticOptions: ReadonlyArray<AppModelOption>,
+  runtimeModels: ReadonlyArray<GitTextGenerationRuntimeModel> | null | undefined,
+): AppModelOption[] {
+  if (!runtimeModels || runtimeModels.length === 0) {
+    return [...staticOptions];
+  }
+
+  // Git-writing defaults share the composer runtime catalog for OpenCode-family providers.
+  return mergeDynamicModelOptions({
+    provider,
+    staticOptions,
+    dynamicModels: runtimeModels,
+  }).map(
+    (option): AppModelOption => ({
+      provider,
+      slug: option.slug,
+      name: option.name,
+      ...(option.upstreamProviderId ? { upstreamProviderId: option.upstreamProviderId } : {}),
+      ...(option.upstreamProviderName
+        ? { upstreamProviderName: option.upstreamProviderName }
+        : {}),
+      isCustom: option.isCustom === true,
+    }),
+  );
+}
+
 export function getGitTextGenerationModelOptions(
   settings: Pick<
     AppSettings,
@@ -781,12 +824,24 @@ export function getGitTextGenerationModelOptions(
     | "customOpenCodeModels"
     | "textGenerationModel"
     | "textGenerationProvider"
-  >,
+  > & {
+    readonly runtimeModelsByProvider?: GitTextGenerationRuntimeModelsByProvider;
+  },
 ): AppModelOption[] {
+  const kiloOptions = mergeGitTextGenerationRuntimeModels(
+    "kilo",
+    getAppModelOptions("kilo", settings.customKiloModels),
+    settings.runtimeModelsByProvider?.kilo,
+  );
+  const openCodeOptions = mergeGitTextGenerationRuntimeModels(
+    "opencode",
+    getAppModelOptions("opencode", settings.customOpenCodeModels),
+    settings.runtimeModelsByProvider?.opencode,
+  );
   const options = [
     ...getAppModelOptions("codex", settings.customCodexModels),
-    ...getAppModelOptions("kilo", settings.customKiloModels),
-    ...getAppModelOptions("opencode", settings.customOpenCodeModels),
+    ...kiloOptions,
+    ...openCodeOptions,
   ];
   const deduped: AppModelOption[] = [];
   const seen = new Set<string>();
