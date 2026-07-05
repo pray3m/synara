@@ -5,8 +5,26 @@ import {
   collectSubagentProviderThreadIds,
   decodeSubagentReceiverAgents,
   extractSubagentIdentityHints,
+  isSubagentTaskKind,
   resolveSubagentIdentityHint,
 } from "./subagents";
+
+describe("isSubagentTaskKind", () => {
+  it("treats Task-tool subagents and unmarked tasks as subagents", () => {
+    expect(isSubagentTaskKind({ subagentType: "explore" })).toBe(true);
+    expect(isSubagentTaskKind({ subagentType: "explore", taskType: "local_workflow" })).toBe(true);
+    expect(isSubagentTaskKind({})).toBe(true);
+    expect(isSubagentTaskKind({ subagentType: null, taskType: null })).toBe(true);
+    expect(isSubagentTaskKind({ taskType: "subagent" })).toBe(true);
+  });
+
+  it("excludes shell, workflow, monitor, and plan task kinds", () => {
+    expect(isSubagentTaskKind({ taskType: "shell" })).toBe(false);
+    expect(isSubagentTaskKind({ taskType: "local_workflow" })).toBe(false);
+    expect(isSubagentTaskKind({ taskType: "monitor" })).toBe(false);
+    expect(isSubagentTaskKind({ taskType: "plan" })).toBe(false);
+  });
+});
 
 describe("collectSubagentProviderThreadIds", () => {
   it("includes thread ids discovered from receiverAgents, agentStates, and source thread_spawn payloads", () => {

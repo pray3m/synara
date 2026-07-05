@@ -4215,6 +4215,54 @@ describe("ProviderRuntimeIngestion", () => {
     expect(childThread.title).toBe("Harper [reviewer]");
   });
 
+  it("imports the spawn prompt as the child thread's first user message", async () => {
+    const harness = await createHarness();
+    const now = new Date().toISOString();
+
+    harness.emit({
+      type: "item.updated",
+      eventId: asEventId("evt-collab-spawn-prompt"),
+      provider: "claudeAgent",
+      createdAt: now,
+      threadId: asThreadId("thread-1"),
+      turnId: asTurnId("turn-parent"),
+      itemId: asItemId("item-collab-prompt"),
+      payload: {
+        itemType: "collab_agent_tool_call",
+        title: "Task",
+        data: {
+          item: {
+            type: "collabAgentToolCall",
+            receiverAgents: [
+              {
+                threadId: "child-provider-prompt",
+                agentNickname: "Scout",
+                agentRole: "explore",
+                prompt: "Find every provider adapter and report back.",
+              },
+            ],
+          },
+        },
+      },
+    });
+
+    const childThread = await waitForThread(
+      harness.engine,
+      (entry) =>
+        entry.id === "subagent:thread-1:child-provider-prompt" &&
+        entry.messages.some(
+          (message: ProviderRuntimeTestMessage) =>
+            message.role === "user" &&
+            message.text === "Find every provider adapter and report back.",
+        ),
+      2000,
+      asThreadId("subagent:thread-1:child-provider-prompt"),
+    );
+
+    expect(childThread.subagentNickname).toBe("Scout");
+    expect(childThread.messages[0]?.role).toBe("user");
+  });
+
   it("continues processing runtime events after a single event handler failure", async () => {
     const harness = await createHarness();
     const now = new Date().toISOString();

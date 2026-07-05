@@ -15,6 +15,7 @@ import {
   extractSubagentIdentityHints,
   decodeSubagentReceiverAgents,
   decodeSubagentReceiverThreadIds,
+  isSubagentTaskKind,
 } from "@t3tools/shared/subagents";
 import { summarizeToolRawOutput } from "@t3tools/shared/toolOutputSummary";
 import { pluralize } from "@t3tools/shared/text";
@@ -682,6 +683,176 @@ export function deriveActiveBackgroundTasksState(
   return activeCount > 0 ? { activeCount } : null;
 }
 
+export type SubagentTaskStatus = "running" | "paused" | "completed" | "failed" | "stopped";
+
+// One provider task/subagent, folded from the parent thread's task.* activity
+// ledger. Backs the Environment panel's Subagents section.
+export interface SubagentTaskState {
+  taskId: string;
+  description: string;
+  subagentType: string | null;
+  taskType: string | null;
+  status: SubagentTaskStatus;
+  isBackgrounded: boolean;
+  startedAt: string;
+  completedAt: string | null;
+  totalTokens: number | null;
+  toolUses: number | null;
+  durationMs: number | null;
+  lastToolName: string | null;
+  prompt: string | null;
+  errorMessage: string | null;
+}
+
+function normalizeSubagentTaskStatus(value: unknown): SubagentTaskStatus | null {
+  switch (value) {
+    case "pending":
+    case "running":
+      return "running";
+    case "paused":
+      return "paused";
+    case "completed":
+      return "completed";
+    case "failed":
+      return "failed";
+    case "killed":
+    case "stopped":
+      return "stopped";
+    default:
+      return null;
+  }
+}
+
+function readTaskUsage(payload: Record<string, unknown> | null, task: SubagentTaskState): void {
+  const usage = payload?.usage && typeof payload.usage === "object" ? payload.usage : null;
+  if (!usage) {
+    return;
+  }
+  const { totalTokens, toolUses, durationMs } = usage as {
+    totalTokens?: unknown;
+    toolUses?: unknown;
+    durationMs?: unknown;
+  };
+  if (typeof totalTokens === "number" && Number.isFinite(totalTokens)) {
+    task.totalTokens = totalTokens;
+  }
+  if (typeof toolUses === "number" && Number.isFinite(toolUses)) {
+    task.toolUses = toolUses;
+  }
+  if (typeof durationMs === "number" && Number.isFinite(durationMs)) {
+    task.durationMs = durationMs;
+  }
+}
+
+// Folds task.started/progress/updated/completed activities into per-task state
+// for panel surfaces. Only actual subagent tasks are returned (shared
+// isSubagentTaskKind rule): plan/shell/workflow/monitor tasks have no child
+// chat thread, so a panel row pointing at one would lead nowhere.
+export function deriveSubagentTaskStates(
+  activities: ReadonlyArray<OrchestrationThreadActivity>,
+): SubagentTaskState[] {
+  const ordered = orderedActivities(activities);
+  const tasks = new Map<string, SubagentTaskState>();
+
+  for (const activity of ordered) {
+    if (
+      activity.kind !== "task.started" &&
+      activity.kind !== "task.progress" &&
+      activity.kind !== "task.updated" &&
+      activity.kind !== "task.completed"
+    ) {
+      continue;
+    }
+    const payload =
+      activity.payload && typeof activity.payload === "object" && !Array.isArray(activity.payload)
+        ? (activity.payload as Record<string, unknown>)
+        : null;
+    const taskId = payload && typeof payload.taskId === "string" ? payload.taskId : null;
+    if (!taskId) {
+      continue;
+    }
+
+    const existing = tasks.get(taskId);
+    const task: SubagentTaskState = existing ?? {
+      taskId,
+      description: "Subagent task",
+      subagentType: null,
+      taskType: null,
+      status: "running",
+      isBackgrounded: false,
+      startedAt: activity.createdAt,
+      completedAt: null,
+      totalTokens: null,
+      toolUses: null,
+      durationMs: null,
+      lastToolName: null,
+      prompt: null,
+      errorMessage: null,
+    };
+    if (!existing) {
+      tasks.set(taskId, task);
+    }
+
+    const detail = typeof payload?.detail === "string" ? payload.detail : null;
+    const subagentType = typeof payload?.subagentType === "string" ? payload.subagentType : null;
+    if (subagentType) {
+      task.subagentType = subagentType;
+    }
+
+    switch (activity.kind) {
+      case "task.started": {
+        if (detail) {
+          task.description = detail;
+        }
+        if (typeof payload?.taskType === "string") {
+          task.taskType = payload.taskType;
+        }
+        if (typeof payload?.prompt === "string") {
+          task.prompt = payload.prompt;
+        }
+        task.startedAt = activity.createdAt;
+        break;
+      }
+      case "task.progress": {
+        if (typeof payload?.lastToolName === "string") {
+          task.lastToolName = payload.lastToolName;
+        }
+        readTaskUsage(payload, task);
+        break;
+      }
+      case "task.updated": {
+        const status = normalizeSubagentTaskStatus(payload?.status);
+        if (status && task.completedAt === null) {
+          task.status = status;
+        }
+        if (typeof payload?.isBackgrounded === "boolean") {
+          task.isBackgrounded = payload.isBackgrounded;
+        }
+        if (detail) {
+          task.description = detail;
+        }
+        if (typeof payload?.errorMessage === "string") {
+          task.errorMessage = payload.errorMessage;
+        }
+        break;
+      }
+      case "task.completed": {
+        task.status = normalizeSubagentTaskStatus(payload?.status) ?? "completed";
+        task.completedAt = activity.createdAt;
+        if (typeof payload?.description === "string") {
+          task.description = payload.description;
+        }
+        readTaskUsage(payload, task);
+        break;
+      }
+    }
+  }
+
+  return [...tasks.values()].filter((task) =>
+    isSubagentTaskKind({ subagentType: task.subagentType, taskType: task.taskType }),
+  );
+}
+
 // Keeps the UI "working" while the provider still has visible assistant text or
 // background-task updates to finish for the latest turn.
 export function hasLiveTurnTailWork(input: {
@@ -815,7 +986,12 @@ export function deriveWorkLogEntries(
   const entries = ordered
     .filter((activity) => shouldKeepActivityForWorkLog(activity, latestTurnId, visibleTurnIds))
     .filter((activity) => !shouldOmitRoutedCollabAgentToolActivity(activity))
-    .filter((activity) => activity.kind !== "task.started" && activity.kind !== "task.completed")
+    .filter(
+      (activity) =>
+        activity.kind !== "task.started" &&
+        activity.kind !== "task.updated" &&
+        activity.kind !== "task.completed",
+    )
     .filter((activity) => !isQuietTurnLifecycleActivity(activity))
     .filter((activity) => activity.kind !== "account.rate-limits.updated")
     .filter(

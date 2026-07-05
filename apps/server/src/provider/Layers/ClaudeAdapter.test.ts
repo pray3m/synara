@@ -35,6 +35,7 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
   private failure: unknown | undefined;
 
   public readonly interruptCalls: Array<void> = [];
+  public readonly stopTaskCalls: Array<string> = [];
   public readonly setModelCalls: Array<string | undefined> = [];
   public readonly setPermissionModeCalls: Array<string> = [];
   public readonly setMaxThinkingTokensCalls: Array<number | null> = [];
@@ -76,6 +77,10 @@ class FakeClaudeQuery implements AsyncIterable<SDKMessage> {
 
   readonly interrupt = async (): Promise<void> => {
     this.interruptCalls.push(undefined);
+  };
+
+  readonly stopTask = async (taskId: string): Promise<void> => {
+    this.stopTaskCalls.push(taskId);
   };
 
   readonly setModel = async (model?: string): Promise<void> => {
@@ -4930,6 +4935,301 @@ describe("ClaudeAdapterLive", () => {
         assert.equal(taskCompleted.payload.toolUseId, "workflow-tool-1");
         assert.equal(taskCompleted.payload.summary, "Workflow finished");
       }
+
+      // Workflow tasks are activity-only: no child chat thread projection.
+      assert.equal(
+        runtimeEvents.some((event) => event.providerRefs?.providerThreadId === "task-workflow-1"),
+        false,
+      );
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("projects a subagent task lifecycle into a child thread", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const runtimeEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "task.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      // Main-thread Task tool call that spawns the subagent.
+      harness.query.emit({
+        type: "stream_event",
+        session_id: "sdk-session-child",
+        uuid: "stream-child-0",
+        parent_tool_use_id: null,
+        event: {
+          type: "content_block_start",
+          index: 0,
+          content_block: {
+            type: "tool_use",
+            id: "task-tool-child-1",
+            name: "Task",
+            input: { description: "Explore the repo" },
+          },
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-child-1",
+        tool_use_id: "task-tool-child-1",
+        description: "Explore the repo",
+        subagent_type: "explore",
+        prompt: "Find every provider adapter and report back.",
+        session_id: "sdk-session-child",
+        uuid: "task-child-started",
+      } as unknown as SDKMessage);
+
+      // Subagent-forwarded assistant text must land in the child transcript.
+      harness.query.emit({
+        type: "assistant",
+        session_id: "sdk-session-child",
+        uuid: "assistant-child-1",
+        parent_tool_use_id: "task-tool-child-1",
+        subagent_type: "explore",
+        message: {
+          id: "assistant-child-message-1",
+          content: [{ type: "text", text: "CHILD-TRANSCRIPT-TEXT" }],
+        },
+      } as unknown as SDKMessage);
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_notification",
+        task_id: "task-child-1",
+        tool_use_id: "task-tool-child-1",
+        status: "completed",
+        summary: "Report ready",
+        usage: { total_tokens: 4321, tool_uses: 3, duration_ms: 9876 },
+        session_id: "sdk-session-child",
+        uuid: "task-child-notification",
+      } as unknown as SDKMessage);
+
+      const runtimeEvents = Array.from(yield* Fiber.join(runtimeEventsFiber));
+
+      const childScoped = runtimeEvents.filter(
+        (event) => event.providerRefs?.providerThreadId === "task-child-1",
+      );
+      for (const event of childScoped) {
+        assert.equal(event.providerRefs?.providerParentThreadId, String(THREAD_ID));
+      }
+
+      // Child synthetic turn opens at task_started and closes at the notification.
+      const childTurnStarted = childScoped.find((event) => event.type === "turn.started");
+      assert.equal(childTurnStarted?.type, "turn.started");
+      const childTurnCompleted = childScoped.find((event) => event.type === "turn.completed");
+      assert.equal(childTurnCompleted?.type, "turn.completed");
+      if (childTurnStarted && childTurnCompleted) {
+        assert.equal(String(childTurnCompleted.turnId), String(childTurnStarted.turnId));
+      }
+      if (childTurnCompleted?.type === "turn.completed") {
+        assert.equal(childTurnCompleted.payload.state, "completed");
+      }
+
+      // The spawn prompt rides on task.started for ingestion to import.
+      const taskStarted = runtimeEvents.find((event) => event.type === "task.started");
+      assert.equal(taskStarted?.type, "task.started");
+      if (taskStarted?.type === "task.started") {
+        assert.equal(taskStarted.payload.prompt, "Find every provider adapter and report back.");
+      }
+
+      // Forwarded assistant text becomes a child-scoped transcript item.
+      const childText = childScoped.find(
+        (event) =>
+          event.type === "item.completed" &&
+          event.payload.detail?.includes("CHILD-TRANSCRIPT-TEXT"),
+      );
+      assert.equal(childText?.type, "item.completed");
+      if (childText?.type === "item.completed" && childTurnStarted) {
+        assert.equal(childText.payload.itemType, "assistant_message");
+        assert.equal(String(childText.turnId), String(childTurnStarted.turnId));
+      }
+
+      // Per-task usage feeds the child thread's meter, not the parent's.
+      const childUsage = childScoped.find((event) => event.type === "thread.token-usage.updated");
+      assert.equal(childUsage?.type, "thread.token-usage.updated");
+      if (childUsage?.type === "thread.token-usage.updated") {
+        assert.equal(childUsage.payload.usage.usedTokens, 4321);
+      }
+      const parentUsage = runtimeEvents.find(
+        (event) =>
+          event.type === "thread.token-usage.updated" &&
+          event.providerRefs?.providerThreadId === undefined,
+      );
+      assert.equal(parentUsage, undefined);
+
+      // The parent's task ledger completes with description + subagentType.
+      const taskCompleted = runtimeEvents.find((event) => event.type === "task.completed");
+      assert.equal(taskCompleted?.type, "task.completed");
+      if (taskCompleted?.type === "task.completed") {
+        assert.equal(taskCompleted.payload.status, "completed");
+        assert.equal(taskCompleted.payload.description, "Explore the repo");
+        assert.equal(taskCompleted.payload.subagentType, "explore");
+        assert.deepEqual(taskCompleted.payload.usage, {
+          totalTokens: 4321,
+          toolUses: 3,
+          durationMs: 9876,
+        });
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("settles paused subagent tasks on session stop but not on idle", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      // Phase 1: run through task start, pause, and the idle signal. Waiting
+      // for the idle event guarantees the pause was processed before teardown.
+      const idleEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil(
+          (event) =>
+            event.type === "session.state.changed" && event.payload.reason === "session_state:idle",
+        ),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+
+      yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-paused-1",
+        description: "Long research",
+        subagent_type: "explore",
+        session_id: "sdk-session-paused",
+        uuid: "task-paused-started",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "task_updated",
+        task_id: "task-paused-1",
+        patch: { status: "paused" },
+        session_id: "sdk-session-paused",
+        uuid: "task-paused-updated",
+      } as unknown as SDKMessage);
+      harness.query.emit({
+        type: "system",
+        subtype: "session_state_changed",
+        state: "idle",
+        session_id: "sdk-session-paused",
+        uuid: "session-state-idle-paused",
+      } as unknown as SDKMessage);
+
+      const idlePhaseEvents = Array.from(yield* Fiber.join(idleEventsFiber));
+
+      // Idle must leave paused tasks open — they can resume later.
+      assert.equal(
+        idlePhaseEvents.some(
+          (event) =>
+            event.type === "turn.completed" &&
+            event.providerRefs?.providerThreadId === "task-paused-1",
+        ),
+        false,
+      );
+
+      // Phase 2: session teardown — nothing can resume the task anymore.
+      const stopEventsFiber = yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "task.completed"),
+        Stream.runCollect,
+        Effect.forkChild,
+      );
+      yield* adapter.stopSession(THREAD_ID);
+      const stopPhaseEvents = Array.from(yield* Fiber.join(stopEventsFiber));
+
+      const childTurnCompletions = stopPhaseEvents.filter(
+        (event) =>
+          event.type === "turn.completed" &&
+          event.providerRefs?.providerThreadId === "task-paused-1",
+      );
+      assert.equal(childTurnCompletions.length, 1);
+      const childTurnCompleted = childTurnCompletions[0];
+      if (childTurnCompleted?.type === "turn.completed") {
+        assert.equal(childTurnCompleted.payload.state, "interrupted");
+      }
+
+      const taskCompleted = stopPhaseEvents.find((event) => event.type === "task.completed");
+      assert.equal(taskCompleted?.type, "task.completed");
+      if (taskCompleted?.type === "task.completed") {
+        assert.equal(String(taskCompleted.payload.taskId), "task-paused-1");
+        assert.equal(taskCompleted.payload.status, "stopped");
+      }
+    }).pipe(
+      Effect.provideService(Random.Random, makeDeterministicRandomService()),
+      Effect.provide(harness.layer),
+    );
+  });
+
+  it.effect("stops a single subagent task when interruptTurn names its provider thread", () => {
+    const harness = makeHarness();
+    return Effect.gen(function* () {
+      const adapter = yield* ClaudeAdapter;
+
+      const session = yield* adapter.startSession({
+        threadId: THREAD_ID,
+        provider: "claudeAgent",
+        runtimeMode: "full-access",
+      });
+      yield* adapter.sendTurn({
+        threadId: session.threadId,
+        input: "hello",
+        attachments: [],
+      });
+
+      harness.query.emit({
+        type: "system",
+        subtype: "task_started",
+        task_id: "task-stop-1",
+        description: "Long-running research",
+        session_id: "sdk-session-stop",
+        uuid: "task-stop-started",
+      } as unknown as SDKMessage);
+      // Drain the emitted lifecycle events so the task registry is populated.
+      yield* adapter.streamEvents.pipe(
+        Stream.takeUntil((event) => event.type === "task.started"),
+        Stream.runDrain,
+        Effect.forkChild,
+        Effect.flatMap(Fiber.join),
+      );
+
+      yield* adapter.interruptTurn(THREAD_ID, undefined, "task-stop-1");
+      assert.deepEqual(harness.query.stopTaskCalls, ["task-stop-1"]);
+      // Targeted stop must not interrupt the whole session.
+      assert.equal(harness.query.interruptCalls.length, 0);
+
+      // Unknown task ids are rejected instead of silently interrupting.
+      const unknownResult = yield* adapter
+        .interruptTurn(THREAD_ID, undefined, "task-missing")
+        .pipe(Effect.exit);
+      assert.equal(unknownResult._tag, "Failure");
+      assert.equal(harness.query.stopTaskCalls.length, 1);
     }).pipe(
       Effect.provideService(Random.Random, makeDeterministicRandomService()),
       Effect.provide(harness.layer),

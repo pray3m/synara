@@ -1538,11 +1538,26 @@ const make = Effect.gen(function* () {
     // Orchestration turn ids are not provider turn ids, so interrupt by session.
     const providerThreadId = resolveSubagentProviderThreadId(thread.id, providerThread.id);
     const turnId = event.payload.turnId ?? thread.session?.activeTurnId ?? undefined;
-    yield* providerService.interruptTurn({
-      threadId: providerThread.id,
-      ...(turnId ? { turnId } : {}),
-      ...(providerThreadId ? { providerThreadId } : {}),
-    });
+    yield* providerService
+      .interruptTurn({
+        threadId: providerThread.id,
+        ...(turnId ? { turnId } : {}),
+        ...(providerThreadId ? { providerThreadId } : {}),
+      })
+      .pipe(
+        // Surface failures (e.g. stopping a subagent task that already
+        // finished) on the requesting thread instead of a server-side log only.
+        Effect.catchCause((cause) =>
+          appendProviderFailureActivity({
+            threadId: event.payload.threadId,
+            kind: "provider.turn.interrupt.failed",
+            summary: "Provider turn interrupt failed",
+            detail: Cause.pretty(cause),
+            turnId: event.payload.turnId ?? null,
+            createdAt: event.payload.createdAt,
+          }),
+        ),
+      );
   });
 
   const processApprovalResponseRequested = Effect.fnUntraced(function* (

@@ -4,7 +4,7 @@
  * reports into the shared thread token-usage snapshot shape.
  */
 import type { ModelUsage, NonNullableUsage } from "@anthropic-ai/claude-agent-sdk";
-import type { ThreadTokenUsageSnapshot } from "@t3tools/contracts";
+import type { RuntimeTaskUsage, ThreadTokenUsageSnapshot } from "@t3tools/contracts";
 import {
   getDefaultContextWindow,
   getModelCapabilities,
@@ -12,7 +12,7 @@ import {
   trimOrNull,
 } from "@t3tools/shared/model";
 
-import { positiveFiniteNumber } from "./tokenUsage.ts";
+import { nonNegativeFiniteNumber, positiveFiniteNumber } from "./tokenUsage.ts";
 
 export function maxClaudeContextWindowFromModelUsage(
   modelUsage: Record<string, ModelUsage> | undefined,
@@ -85,6 +85,28 @@ export function normalizeClaudeTokenUsage(
     ...(typeof usage.duration_ms === "number" && Number.isFinite(usage.duration_ms)
       ? { durationMs: usage.duration_ms }
       : {}),
+  };
+}
+
+// Task lifecycle usage ({ total_tokens, tool_uses, duration_ms }) is a
+// cumulative per-task counter, not a context-window snapshot — normalize it
+// into the typed task-usage shape instead of the thread token-usage snapshot.
+export function normalizeClaudeTaskUsage(
+  value: Record<string, unknown> | undefined,
+): RuntimeTaskUsage | undefined {
+  if (!value || typeof value !== "object") {
+    return undefined;
+  }
+  const totalTokens = positiveFiniteNumber(value.total_tokens);
+  const toolUses = nonNegativeFiniteNumber(value.tool_uses);
+  const durationMs = positiveFiniteNumber(value.duration_ms);
+  if (totalTokens === undefined && toolUses === undefined && durationMs === undefined) {
+    return undefined;
+  }
+  return {
+    ...(totalTokens !== undefined ? { totalTokens } : {}),
+    ...(toolUses !== undefined ? { toolUses } : {}),
+    ...(durationMs !== undefined ? { durationMs } : {}),
   };
 }
 

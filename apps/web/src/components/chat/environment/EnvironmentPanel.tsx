@@ -41,6 +41,10 @@ import {
   EnvironmentAutomationsSection,
   type EnvironmentAutomationPanelItem,
 } from "./EnvironmentAutomationsSection";
+import {
+  EnvironmentSubagentsSection,
+  type EnvironmentSubagentPanelItem,
+} from "./EnvironmentSubagentsSection";
 import { EnvironmentUsageSection } from "./EnvironmentUsageSection";
 import { EnvironmentLocalServersSection } from "./EnvironmentLocalServersSection";
 import { EnvironmentMarkersSection } from "./EnvironmentMarkersSection";
@@ -94,6 +98,12 @@ export interface EnvironmentPanelProps {
   diffOpen: boolean;
   /** Heartbeat automations whose target is the active thread. */
   threadAutomations: readonly EnvironmentAutomationPanelItem[];
+  /** Provider tasks/subagents spawned by this thread (Claude Task tool, workflows). */
+  subagents: readonly EnvironmentSubagentPanelItem[];
+  /** Open a subagent's child thread. */
+  onOpenSubagent: (threadId: ThreadId) => void;
+  /** Stop a running subagent (interrupt on the child thread id). */
+  onStopSubagent: (threadId: ThreadId) => void;
   /** Non-null when the diff panel cannot be opened (e.g. no repo / no changes yet). */
   diffDisabledReason?: string | null;
   /** Shared diff totals from ChatView so the mounted panel does not duplicate patch parsing. */
@@ -200,6 +210,9 @@ export function EnvironmentPanel({
   showGitActions,
   diffOpen,
   threadAutomations,
+  subagents,
+  onOpenSubagent,
+  onStopSubagent,
   diffDisabledReason = null,
   diffTotals,
   branchToolbar,
@@ -303,6 +316,17 @@ export function EnvironmentPanel({
       ) : null}
 
       <EnvironmentLocalServersSection enabled={open} />
+
+      {settings.showEnvironmentSubagents && subagents.length > 0 ? (
+        <EnvironmentSubagentsSection
+          subagents={subagents}
+          onOpenSubagent={(subagentThreadId) => {
+            onOpenSubagent(subagentThreadId);
+            onClose();
+          }}
+          onStopSubagent={onStopSubagent}
+        />
+      ) : null}
 
       {/*
         Optional sections below the git block. Each renders its own leading divider only when it

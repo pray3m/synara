@@ -1680,6 +1680,15 @@ function SettingsRouteView() {
       <div ref={environmentPanelRef} id={SETTINGS_TARGETS.environmentPanel}>
         <SettingsSection title="Environment panel">
           {renderBooleanSettingRow({
+            settingKey: "showEnvironmentSubagents",
+            title: "Subagents",
+            description:
+              "Show running and finished subagent tasks (with status, elapsed time, and tokens) in the chat Environment panel.",
+            resetLabel: "subagents section",
+            ariaLabel: "Show the Subagents section in the Environment panel",
+          })}
+
+          {renderBooleanSettingRow({
             settingKey: "showEnvironmentUsage",
             title: "Usage",
             description: "Show the provider usage row in the chat Environment panel.",

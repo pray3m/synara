@@ -21,6 +21,7 @@ import {
   deriveWorkLogEntries,
   findLatestProposedPlan,
   findSidebarProposedPlan,
+  deriveSubagentTaskStates,
   hasActionableProposedPlan,
   isFileChangeWorkLogEntry,
   isLatestTurnSettled,
@@ -527,6 +528,155 @@ describe("deriveActiveBackgroundTasksState", () => {
     expect(deriveActiveBackgroundTasksState(activities, TurnId.makeUnsafe("turn-1"))).toEqual({
       activeCount: 1,
     });
+  });
+});
+
+describe("deriveSubagentTaskStates", () => {
+  it("folds the task lifecycle into per-task state and excludes plan tasks", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "plan-task-start",
+        createdAt: "2026-02-23T00:00:00.000Z",
+        kind: "task.started",
+        summary: "Plan task started",
+        tone: "info",
+        payload: { taskId: "turn-1", taskType: "plan" },
+      }),
+      makeActivity({
+        id: "subagent-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Subagent task started",
+        tone: "info",
+        payload: {
+          taskId: "task-1",
+          detail: "Explore the repo",
+          subagentType: "explore",
+          prompt: "Find every provider adapter.",
+        },
+      }),
+      makeActivity({
+        id: "subagent-progress",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.progress",
+        summary: "Subagent task update",
+        tone: "info",
+        payload: {
+          taskId: "task-1",
+          lastToolName: "Bash",
+          usage: { totalTokens: 1500, toolUses: 2, durationMs: 4000 },
+        },
+      }),
+      makeActivity({
+        id: "subagent-backgrounded",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "task.updated",
+        summary: "Subagent task backgrounded",
+        tone: "info",
+        payload: { taskId: "task-1", isBackgrounded: true },
+      }),
+      makeActivity({
+        id: "subagent-complete",
+        createdAt: "2026-02-23T00:00:04.000Z",
+        kind: "task.completed",
+        summary: "Subagent task completed",
+        tone: "info",
+        payload: {
+          taskId: "task-1",
+          status: "completed",
+          description: "Explore the repo",
+          usage: { totalTokens: 4321, toolUses: 5, durationMs: 9000 },
+        },
+      }),
+    ];
+
+    expect(deriveSubagentTaskStates(activities)).toEqual([
+      {
+        taskId: "task-1",
+        description: "Explore the repo",
+        subagentType: "explore",
+        taskType: null,
+        status: "completed",
+        isBackgrounded: true,
+        startedAt: "2026-02-23T00:00:01.000Z",
+        completedAt: "2026-02-23T00:00:04.000Z",
+        totalTokens: 4321,
+        toolUses: 5,
+        durationMs: 9000,
+        lastToolName: "Bash",
+        prompt: "Find every provider adapter.",
+        errorMessage: null,
+      },
+    ]);
+  });
+
+  it("excludes non-subagent task kinds (plan, workflows, shell)", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "workflow-task-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Workflow task started",
+        tone: "info",
+        payload: { taskId: "task-workflow", detail: "Run spec", taskType: "local_workflow" },
+      }),
+      makeActivity({
+        id: "shell-task-start",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.started",
+        summary: "Shell task started",
+        tone: "info",
+        payload: { taskId: "task-shell", detail: "npm run build", taskType: "shell" },
+      }),
+      makeActivity({
+        id: "subagent-task-start",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "task.started",
+        summary: "Subagent task started",
+        tone: "info",
+        payload: { taskId: "task-agent", detail: "Explore", subagentType: "explore" },
+      }),
+    ];
+
+    expect(deriveSubagentTaskStates(activities).map((task) => task.taskId)).toEqual(["task-agent"]);
+  });
+
+  it("maps paused and killed status patches onto the task state", () => {
+    const activities: OrchestrationThreadActivity[] = [
+      makeActivity({
+        id: "subagent-start",
+        createdAt: "2026-02-23T00:00:01.000Z",
+        kind: "task.started",
+        summary: "Subagent task started",
+        tone: "info",
+        payload: { taskId: "task-2", detail: "Long research" },
+      }),
+      makeActivity({
+        id: "subagent-paused",
+        createdAt: "2026-02-23T00:00:02.000Z",
+        kind: "task.updated",
+        summary: "Subagent task paused",
+        tone: "info",
+        payload: { taskId: "task-2", status: "paused" },
+      }),
+    ];
+
+    const paused = deriveSubagentTaskStates(activities);
+    expect(paused[0]?.status).toBe("paused");
+
+    const killed = deriveSubagentTaskStates([
+      ...activities,
+      makeActivity({
+        id: "subagent-killed",
+        createdAt: "2026-02-23T00:00:03.000Z",
+        kind: "task.completed",
+        summary: "Subagent task killed",
+        tone: "info",
+        payload: { taskId: "task-2", status: "killed" },
+      }),
+    ]);
+    expect(killed[0]?.status).toBe("stopped");
+    expect(killed[0]?.completedAt).toBe("2026-02-23T00:00:03.000Z");
   });
 });
 

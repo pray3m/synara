@@ -169,6 +169,7 @@ import {
 import {
   createRelevantWorkLogThreadsSelector,
   createThreadLineageSelector,
+  localSubagentThreadId,
 } from "./ChatView.selectors";
 import {
   clampCollapsedComposerCursor,
@@ -199,6 +200,7 @@ import {
   deriveActiveWorkStartedAt,
   deriveActiveTaskListState,
   deriveActiveBackgroundTasksState,
+  deriveSubagentTaskStates,
   findSidebarProposedPlan,
   findLatestProposedPlan,
   deriveWorkLogEntries,
@@ -2372,6 +2374,19 @@ export default function ChatView({
         ? null
         : deriveActiveBackgroundTasksState(threadActivities, activeLatestTurn?.turnId ?? undefined),
     [activeLatestTurn?.turnId, latestTurnSettled, threadActivities],
+  );
+  // Subagent tasks folded from the parent thread's task.* activity ledger; each
+  // row targets the task's child thread (created server-side by ingestion).
+  const activeThreadIdForSubagents = activeThread?.id ?? null;
+  const subagentPanelItems = useMemo(
+    () =>
+      activeThreadIdForSubagents
+        ? deriveSubagentTaskStates(threadActivities).map((task) => ({
+            task,
+            threadId: localSubagentThreadId(activeThreadIdForSubagents, task.taskId),
+          }))
+        : [],
+    [threadActivities, activeThreadIdForSubagents],
   );
   // Callback ref on the stacked-panel wrapper: re-attaches a single ResizeObserver when
   // the composer mounts/unmounts, and the observer catches every panel appearing,
@@ -9167,6 +9182,18 @@ export default function ChatView({
     },
     [navigate],
   );
+  // Stop one subagent: interrupt on the child thread id — the command reactor
+  // resolves the owning provider session and stops just that task.
+  const onStopSubagent = useCallback((subagentThreadId: ThreadId) => {
+    const api = readNativeApi();
+    if (!api) return;
+    void api.orchestration.dispatchCommand({
+      type: "thread.turn.interrupt",
+      commandId: newCommandId(),
+      threadId: subagentThreadId,
+      createdAt: new Date().toISOString(),
+    });
+  }, []);
   const activeProjectIdForNewChat = activeProject?.id ?? null;
   const onNewEditorChat = useCallback(() => {
     if (!activeProjectIdForNewChat) {
@@ -9509,6 +9536,9 @@ export default function ChatView({
     showGitActions,
     diffOpen: resolvedDiffOpen,
     threadAutomations: threadAutomationItems,
+    subagents: subagentPanelItems,
+    onOpenSubagent: onNavigateToThread,
+    onStopSubagent,
     diffDisabledReason,
     diffTotals: repoDiffTotals,
     branchToolbar: branchToolbarProps,

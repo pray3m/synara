@@ -562,6 +562,23 @@ function selectMergedModel(input: {
   };
 }
 
+// Whether a provider task is an actual subagent (Task tool) as opposed to a
+// background shell command, workflow run, or MCP monitor task. Subagent tasks
+// get a dedicated child chat thread; other task kinds only surface as task
+// activities. The SDK sets `subagent_type` only for Task-tool subagents and
+// `task_type` for the other kinds (e.g. "local_workflow", "shell"), so a task
+// with neither marker is treated as a subagent to keep the common case working.
+export function isSubagentTaskKind(input: {
+  readonly subagentType?: string | null | undefined;
+  readonly taskType?: string | null | undefined;
+}): boolean {
+  if (typeof input.subagentType === "string" && input.subagentType.trim().length > 0) {
+    return true;
+  }
+  const taskType = typeof input.taskType === "string" ? input.taskType.trim() : "";
+  return taskType.length === 0 || taskType === "subagent";
+}
+
 export function mergeSubagentIdentityHints(
   existing: ParsedSubagentIdentityHint | undefined,
   incoming: ParsedSubagentIdentityHint,

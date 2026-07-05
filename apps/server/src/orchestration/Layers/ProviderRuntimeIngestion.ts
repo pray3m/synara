@@ -557,6 +557,7 @@ interface SubagentIdentity {
   readonly nickname?: string;
   readonly role?: string;
   readonly model?: string;
+  readonly prompt?: string;
   readonly modelIsRequestedHint?: boolean;
 }
 
@@ -971,6 +972,7 @@ function runtimeEventToActivities(
             ...(event.payload.description
               ? { detail: truncateDetail(event.payload.description) }
               : {}),
+            ...(event.payload.prompt ? { prompt: truncateDetail(event.payload.prompt) } : {}),
           }),
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1001,6 +1003,38 @@ function runtimeEventToActivities(
       ];
     }
 
+    case "task.updated": {
+      return [
+        {
+          id: event.eventId,
+          createdAt: event.createdAt,
+          tone: "info",
+          kind: "task.updated",
+          summary:
+            event.payload.status === "paused"
+              ? "Task paused"
+              : event.payload.isBackgrounded === true
+                ? "Task moved to background"
+                : "Task updated",
+          payload: toActivityPayload({
+            taskId: event.payload.taskId,
+            ...(event.payload.status ? { status: event.payload.status } : {}),
+            ...(event.payload.description
+              ? { detail: truncateDetail(event.payload.description) }
+              : {}),
+            ...(typeof event.payload.isBackgrounded === "boolean"
+              ? { isBackgrounded: event.payload.isBackgrounded }
+              : {}),
+            ...(event.payload.errorMessage
+              ? { errorMessage: truncateDetail(event.payload.errorMessage) }
+              : {}),
+          }),
+          turnId: toTurnId(event.turnId) ?? null,
+          ...maybeSequence,
+        },
+      ];
+    }
+
     case "task.completed": {
       return [
         {
@@ -1020,6 +1054,10 @@ function runtimeEventToActivities(
             ...(event.payload.summary ? { detail: truncateDetail(event.payload.summary) } : {}),
             ...(event.payload.usage !== undefined ? { usage: event.payload.usage } : {}),
             ...(event.payload.toolUseId ? { toolUseId: event.payload.toolUseId } : {}),
+            ...(event.payload.description
+              ? { description: truncateDetail(event.payload.description) }
+              : {}),
+            ...(event.payload.subagentType ? { subagentType: event.payload.subagentType } : {}),
           }),
           turnId: toTurnId(event.turnId) ?? null,
           ...maybeSequence,
@@ -1999,7 +2037,7 @@ const make = Effect.gen(function* () {
         providerThreadId: string,
         identity?: Pick<
           SubagentIdentity,
-          "agentId" | "nickname" | "role" | "model" | "modelIsRequestedHint"
+          "agentId" | "nickname" | "role" | "model" | "prompt" | "modelIsRequestedHint"
         >,
       ) =>
         Effect.gen(function* () {
@@ -2048,6 +2086,25 @@ const make = Effect.gen(function* () {
               subagentRole: identity?.role ?? null,
               createdAt: now,
             });
+            // Seed the child transcript with the spawn prompt so the subagent
+            // chat opens with what the agent was asked to do.
+            if (identity?.prompt) {
+              yield* orchestrationEngine.dispatch({
+                type: "thread.messages.import",
+                commandId: providerCommandId(event, "subagent-thread-prompt-import"),
+                threadId: childThreadId,
+                messages: [
+                  {
+                    messageId: MessageId.makeUnsafe(`subagent-prompt:${childThreadId}`),
+                    role: "user",
+                    text: identity.prompt,
+                    createdAt: now,
+                    updatedAt: now,
+                  },
+                ],
+                createdAt: now,
+              });
+            }
           } else {
             const existingThreadShell = existingThread.value;
             if (
