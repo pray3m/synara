@@ -381,7 +381,10 @@ function makePermissionSnapshot(definition: AutomationDefinition, now: string) {
   return {
     provider: inferLegacyProviderKindFromModelSelection(definition.modelSelection),
     modelSelection: definition.modelSelection,
-    ...(definition.providerOptions ? { providerOptions: definition.providerOptions } : {}),
+    // Instance-backed runs resolve provider options live; snapshots keep only legacy direct options.
+    ...(!definition.modelSelection && definition.providerOptions
+      ? { providerOptions: definition.providerOptions }
+      : {}),
     completionPolicyVersion: completionPolicyVersionForDefinition(definition),
     runtimeMode: definition.runtimeMode,
     interactionMode: definition.interactionMode,
