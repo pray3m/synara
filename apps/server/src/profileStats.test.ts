@@ -275,6 +275,153 @@ describe("ProfileStatsQuery", () => {
     );
   });
 
+  it("reports token-based provider ranking separately from turn-count profile stats", async () => {
+    await runProfileStatsTest(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const statsQuery = yield* ProfileStatsQuery;
+
+        yield* sql`
+          INSERT INTO projection_threads (
+            thread_id,
+            project_id,
+            title,
+            model_selection_json,
+            runtime_mode,
+            interaction_mode,
+            env_mode,
+            created_at,
+            updated_at,
+            deleted_at
+          )
+          VALUES
+            (
+              'thread-codex',
+              'project-profile',
+              'Codex Thread',
+              '{"provider":"codex","model":"gpt-5-codex"}',
+              'full-access',
+              'default',
+              'local',
+              '2026-06-13T09:00:00.000Z',
+              '2026-06-13T09:00:00.000Z',
+              NULL
+            ),
+            (
+              'thread-claude',
+              'project-profile',
+              'Claude Thread',
+              '{"provider":"claudeAgent","model":"claude-sonnet-4-6"}',
+              'full-access',
+              'default',
+              'local',
+              '2026-06-13T10:00:00.000Z',
+              '2026-06-13T10:00:00.000Z',
+              NULL
+            )
+        `;
+
+        yield* sql`
+          INSERT INTO orchestration_events (
+            event_id,
+            aggregate_kind,
+            stream_id,
+            stream_version,
+            event_type,
+            occurred_at,
+            actor_kind,
+            payload_json,
+            metadata_json
+          )
+          VALUES
+            (
+              'event-codex-1',
+              'thread',
+              'thread-codex',
+              1,
+              'thread.turn-start-requested',
+              '2026-06-13T09:05:00.000Z',
+              'client',
+              '{"threadId":"thread-codex","modelSelection":{"provider":"codex","model":"gpt-5-codex"}}',
+              '{}'
+            ),
+            (
+              'event-codex-2',
+              'thread',
+              'thread-codex',
+              2,
+              'thread.turn-start-requested',
+              '2026-06-13T09:35:00.000Z',
+              'client',
+              '{"threadId":"thread-codex","modelSelection":{"provider":"codex","model":"gpt-5-codex"}}',
+              '{}'
+            ),
+            (
+              'event-claude-1',
+              'thread',
+              'thread-claude',
+              1,
+              'thread.turn-start-requested',
+              '2026-06-13T10:05:00.000Z',
+              'client',
+              '{"threadId":"thread-claude","modelSelection":{"provider":"claudeAgent","model":"claude-sonnet-4-6"}}',
+              '{}'
+            )
+        `;
+
+        // Codex has more turns (2 vs 1) but Claude processed far more tokens,
+        // so core stats stay turn-ranked while token stats report Claude on top.
+        yield* sql`
+          INSERT INTO projection_thread_activities (
+            activity_id,
+            thread_id,
+            turn_id,
+            tone,
+            kind,
+            summary,
+            payload_json,
+            sequence,
+            created_at
+          )
+          VALUES
+            (
+              'activity-codex-1',
+              'thread-codex',
+              'turn-codex-1',
+              'info',
+              'context-window.updated',
+              'tokens updated',
+              '{"totalProcessedTokens":1000}',
+              1,
+              '2026-06-13T09:06:00.000Z'
+            ),
+            (
+              'activity-claude-1',
+              'thread-claude',
+              'turn-claude-1',
+              'info',
+              'context-window.updated',
+              'tokens updated',
+              '{"totalProcessedTokens":5000}',
+              1,
+              '2026-06-13T10:06:00.000Z'
+            )
+        `;
+
+        const stats = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 0 });
+        const tokenStats = yield* statsQuery.getProfileTokenStats({ utcOffsetMinutes: 0 });
+
+        expect(stats.insights.topProvider).toBe("codex");
+        expect(stats.insights.topProviderPercent).toBeCloseTo(66.7);
+        expect(tokenStats.topProvider).toBe("claudeAgent");
+        expect(tokenStats.topProviderPercent).toBeCloseTo(83.3);
+        expect(tokenStats.providers).toEqual(["claudeAgent", "codex"]);
+        // Turn-based provider/model mix is unchanged by the token ranking.
+        expect(stats.providerModels[0]).toMatchObject({ provider: "codex", turnCount: 2 });
+      }),
+    );
+  });
+
   it("counts slash skill invocations from projected thread message text and groups them with dollar usage", async () => {
     await runProfileStatsTest(
       Effect.gen(function* () {
@@ -432,7 +579,7 @@ describe("ProfileStatsQuery", () => {
               'thread-manual-deleted',
               'turn-skill-manual-deleted',
               'user',
-              'Manual deleted /openai-docs should not count',
+              'Manual deleted /openai-docs should still count',
               '[{"name":"openai-docs","path":"/skills/openai-docs/SKILL.md"}]',
               NULL,
               0,
@@ -457,12 +604,15 @@ describe("ProfileStatsQuery", () => {
 
         const stats = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 0 });
 
-        expect(stats.insights.skillsExplored).toBe(4);
-        expect(stats.insights.totalSkillsUsed).toBe(7);
-        expect(stats.activity.totalPromptsSent).toBe(3);
-        expect(stats.activity.totalThreads).toBe(2);
-        expect(stats.skills.slice(0, 4)).toEqual([
+        // Retention-hidden and manually deleted threads both keep contributing:
+        // profile stats are lifetime totals and deletion is only a soft hide.
+        expect(stats.insights.skillsExplored).toBe(5);
+        expect(stats.insights.totalSkillsUsed).toBe(8);
+        expect(stats.activity.totalPromptsSent).toBe(4);
+        expect(stats.activity.totalThreads).toBe(3);
+        expect(stats.skills.slice(0, 5)).toEqual([
           { name: "check-code", displayName: "$check-code", kind: "skill", runCount: 4 },
+          { name: "openai-docs", displayName: "$openai-docs", kind: "skill", runCount: 1 },
           { name: "planner", displayName: "$planner", kind: "skill", runCount: 1 },
           { name: "refactor-code", displayName: "$refactor-code", kind: "skill", runCount: 1 },
           { name: "reviewer", displayName: "@reviewer", kind: "agent", runCount: 1 },
@@ -471,7 +621,7 @@ describe("ProfileStatsQuery", () => {
     );
   });
 
-  it("selects the live project with the most native user prompts as most worked", async () => {
+  it("keeps deleted threads and deleted projects in the most-worked ranking", async () => {
     await runProfileStatsTest(
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
@@ -654,7 +804,7 @@ describe("ProfileStatsQuery", () => {
               'thread-alpha-deleted',
               'turn-alpha-deleted',
               'user',
-              'deleted thread should not win',
+              'deleted thread still counts',
               0,
               'native',
               '2026-06-14T11:05:00.000Z',
@@ -665,7 +815,7 @@ describe("ProfileStatsQuery", () => {
               'thread-deleted-project',
               'turn-deleted-project',
               'user',
-              'deleted project should not win',
+              'deleted project still counts',
               0,
               'native',
               '2026-06-14T11:35:00.000Z',
@@ -675,16 +825,19 @@ describe("ProfileStatsQuery", () => {
 
         const stats = yield* statsQuery.getProfileStats({ utcOffsetMinutes: 0 });
 
-        expect(stats.activity.totalPromptsSent).toBe(5);
-        expect(stats.activity.totalThreads).toBe(2);
+        // Lifetime totals: deleted threads/projects keep their contribution.
+        expect(stats.activity.totalPromptsSent).toBe(7);
+        expect(stats.activity.totalThreads).toBe(4);
+        // Alpha and Beta tie on prompts (3) and active days (2); the deleted
+        // Alpha thread's later prompt breaks the tie via lastWorkedAt.
         expect(stats.mostWorkedProject).toEqual({
-          projectId: "project-beta",
-          title: "Beta",
-          workspaceRoot: "/work/beta",
+          projectId: "project-alpha",
+          title: "Alpha",
+          workspaceRoot: "/work/alpha",
           promptCount: 3,
-          threadCount: 1,
+          threadCount: 2,
           activeDays: 2,
-          lastWorkedAt: "2026-06-14T10:35:00.000Z",
+          lastWorkedAt: "2026-06-14T11:05:00.000Z",
         });
       }),
     );

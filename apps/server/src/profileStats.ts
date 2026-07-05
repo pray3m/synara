@@ -1,6 +1,9 @@
 // FILE: profileStats.ts
 // Purpose: Compute Profile-page stats from Synara's local projection DB only.
 // The share card never reads provider archives or cloud services for metrics.
+// Stats are lifetime numbers: deleting a thread purges its rows but snapshots
+// the aggregates into profile_stats_deleted_* first (profileStatsArchive.ts),
+// and every query here merges live projections with those archived aggregates.
 // Layer: server stats query service (SqlClient + ServerConfig).
 
 import nodePath from "node:path";
@@ -21,7 +24,6 @@ import { ServerConfig } from "./config";
 
 const HEATMAP_WINDOW_DAYS = 274; // ~9 months, GitHub-style contribution grid.
 const SKILL_RESULT_LIMIT = 12;
-const THREAD_RETENTION_COMMAND_ID_PATTERN = "thread-retention:%";
 const PROVIDER_KINDS = new Set<ProviderKind>([
   "codex",
   "claudeAgent",
@@ -58,6 +60,13 @@ interface SkillUsageMessageRow {
   readonly text: string | null;
   readonly skillsJson: string | null;
   readonly mentionsJson: string | null;
+}
+
+// Pre-aggregated usage snapshotted from purged threads (profile_stats_deleted_skills).
+interface ArchivedSkillUsageRow {
+  readonly name: string | null;
+  readonly kind: string | null;
+  readonly runCount: number;
 }
 
 interface MostWorkedProjectRow {
@@ -232,10 +241,12 @@ function extractTextSkillNames(text: string | null): string[] {
   return names;
 }
 
-// Builds profile skill rows from every stored Synara user message. Structured
-// references stay authoritative, while text tokens backfill older or partial rows.
+// Builds profile skill rows from every stored Synara user message, plus the
+// pre-aggregated counts snapshotted from purged threads. Structured references
+// stay authoritative, while text tokens backfill older or partial rows.
 export function aggregateProfileSkillUsageRows(
   rows: ReadonlyArray<SkillUsageMessageRow>,
+  archivedRows: ReadonlyArray<ArchivedSkillUsageRow> = [],
 ): SkillUsage[] {
   const counts = new Map<string, UsageCount>();
 
@@ -308,6 +319,22 @@ export function aggregateProfileSkillUsageRows(
       } else {
         counts.set(key, { ...usage, runCount: 1 });
       }
+    }
+  }
+
+  for (const row of archivedRows) {
+    const name = normalizeUsageName(row.name);
+    const kind: UsageKind | null = row.kind === "skill" || row.kind === "agent" ? row.kind : null;
+    const runCount = Math.trunc(num(row.runCount));
+    if (!name || !kind || runCount <= 0) {
+      continue;
+    }
+    const key = usageKey(kind, name);
+    const existing = counts.get(key);
+    if (existing) {
+      existing.runCount += runCount;
+    } else {
+      counts.set(key, { name, kind, runCount });
     }
   }
 
@@ -393,6 +420,32 @@ function normalizeProviderKind(value: unknown): ProviderKind | "unknown" {
   return provider && PROVIDER_KINDS.has(provider as ProviderKind)
     ? (provider as ProviderKind)
     : "unknown";
+}
+
+interface TokenActivityAggregate {
+  readonly tokensByDay: Map<string, number>;
+  readonly tokensByProvider: Map<ProviderKind, number>;
+  readonly lifetime: number;
+}
+
+function aggregateTokenActivity(rows: ReadonlyArray<TokenDayRow>): TokenActivityAggregate {
+  const tokensByDay = new Map<string, number>();
+  const tokensByProvider = new Map<ProviderKind, number>();
+  let lifetime = 0;
+  for (const row of rows) {
+    const day = nonEmptyString(row.day);
+    const tokens = num(row.tokens);
+    if (!day || tokens <= 0) {
+      continue;
+    }
+    tokensByDay.set(day, (tokensByDay.get(day) ?? 0) + tokens);
+    lifetime += tokens;
+    const provider = normalizeProviderKind(row.provider);
+    if (provider !== "unknown") {
+      tokensByProvider.set(provider, (tokensByProvider.get(provider) ?? 0) + tokens);
+    }
+  }
+  return { tokensByDay, tokensByProvider, lifetime };
 }
 
 function computeStreaks(
@@ -535,8 +588,11 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       ),
     );
 
-  // Retention hides old threads with `thread.delete` but intentionally keeps
-  // their rows for profile history. Manual deletes and deleted projects stay out.
+  // Profile history counts all work ever done. Retention hides are soft
+  // deletes whose rows keep feeding these queries directly; explicit deletes
+  // purge the thread's rows AFTER snapshotting the aggregates that matter into
+  // the profile_stats_deleted_* tables (see profileStatsArchive.ts), so every
+  // query below merges live projections with those archived aggregates.
   // ── SQL helpers ──────────────────────────────────────────────────────
 
   // Activity = days/hours the user actually sent a Synara prompt. One day-hour
@@ -545,26 +601,24 @@ const makeProfileStatsQuery = Effect.gen(function* () {
     legacyCompatibleQuery(
       "profileStats.promptActivity",
       sql<PromptActivityRow>`
+        WITH prompt_events AS (
+          -- The thread join (no deleted_at filter) keeps retention-hidden rows
+          -- counting while excluding orphan message rows of purged threads,
+          -- which are already counted from the archive tables.
+          SELECT m.created_at AS created_at
+          FROM projection_thread_messages m
+          JOIN projection_threads t ON t.thread_id = m.thread_id
+          WHERE m.role = 'user'
+            AND m.source = 'native'
+          UNION ALL
+          SELECT d.created_at AS created_at
+          FROM profile_stats_deleted_prompts d
+        )
         SELECT
-          STRFTIME('%Y-%m-%d', DATETIME(m.created_at, ${tz})) AS day,
-          CAST(STRFTIME('%H', DATETIME(m.created_at, ${tz})) AS INTEGER) AS hour,
+          STRFTIME('%Y-%m-%d', DATETIME(created_at, ${tz})) AS day,
+          CAST(STRFTIME('%H', DATETIME(created_at, ${tz})) AS INTEGER) AS hour,
           COUNT(*) AS count
-        FROM projection_thread_messages m
-        JOIN projection_threads t ON t.thread_id = m.thread_id
-        LEFT JOIN projection_projects p ON p.project_id = t.project_id
-        WHERE m.role = 'user'
-          AND m.source = 'native'
-          AND (
-            t.deleted_at IS NULL
-            OR EXISTS (
-              SELECT 1
-              FROM orchestration_events td
-              WHERE td.event_type = 'thread.deleted'
-                AND td.stream_id = t.thread_id
-                AND td.command_id LIKE ${THREAD_RETENTION_COMMAND_ID_PATTERN}
-            )
-          )
-          AND p.deleted_at IS NULL
+        FROM prompt_events
         GROUP BY day, hour
         ORDER BY day ASC, hour ASC
       `,
@@ -594,20 +648,8 @@ const makeProfileStatsQuery = Effect.gen(function* () {
             a.activity_id AS activity_id
           FROM projection_thread_activities a
           JOIN projection_threads th ON th.thread_id = a.thread_id
-          LEFT JOIN projection_projects p ON p.project_id = th.project_id
           WHERE a.kind = 'context-window.updated'
             AND json_extract(a.payload_json, '$.totalProcessedTokens') IS NOT NULL
-            AND (
-              th.deleted_at IS NULL
-              OR EXISTS (
-                SELECT 1
-                FROM orchestration_events td
-                WHERE td.event_type = 'thread.deleted'
-                  AND td.stream_id = th.thread_id
-                  AND td.command_id LIKE ${THREAD_RETENTION_COMMAND_ID_PATTERN}
-              )
-            )
-            AND p.deleted_at IS NULL
         ),
         delta AS (
           SELECT
@@ -622,9 +664,18 @@ const makeProfileStatsQuery = Effect.gen(function* () {
                 activity_id ASC
             )) AS d
           FROM ev
+        ),
+        all_tokens AS (
+          SELECT day, provider, d FROM delta
+          UNION ALL
+          SELECT
+            STRFTIME('%Y-%m-%d', DATETIME(a.created_at, ${tz})) AS day,
+            COALESCE(a.provider, 'unknown') AS provider,
+            a.tokens AS d
+          FROM profile_stats_deleted_tokens a
         )
         SELECT day, provider, SUM(d) AS tokens
-        FROM delta
+        FROM all_tokens
         GROUP BY day, provider
       `,
     );
@@ -633,20 +684,9 @@ const makeProfileStatsQuery = Effect.gen(function* () {
     legacyCompatibleQuery(
       "profileStats.totalThreads",
       sql<CountRow>`
-        SELECT COUNT(*) AS count
-        FROM projection_threads t
-        LEFT JOIN projection_projects p ON p.project_id = t.project_id
-        WHERE (
-            t.deleted_at IS NULL
-            OR EXISTS (
-              SELECT 1
-              FROM orchestration_events td
-              WHERE td.event_type = 'thread.deleted'
-                AND td.stream_id = t.thread_id
-                AND td.command_id LIKE ${THREAD_RETENTION_COMMAND_ID_PATTERN}
-            )
-          )
-          AND p.deleted_at IS NULL
+        SELECT
+          (SELECT COUNT(*) FROM projection_threads)
+          + (SELECT COUNT(*) FROM profile_stats_deleted_threads) AS count
       `,
     );
 
@@ -689,22 +729,18 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           FROM orchestration_events e
           JOIN projection_threads t
             ON t.thread_id = COALESCE(json_extract(e.payload_json, '$.threadId'), e.stream_id)
-          LEFT JOIN projection_projects p ON p.project_id = t.project_id
           WHERE e.event_type = 'thread.turn-start-requested'
-            AND (
-              t.deleted_at IS NULL
-              OR EXISTS (
-                SELECT 1
-                FROM orchestration_events td
-                WHERE td.event_type = 'thread.deleted'
-                  AND td.stream_id = t.thread_id
-                  AND td.command_id LIKE ${THREAD_RETENTION_COMMAND_ID_PATTERN}
-              )
-            )
-            AND p.deleted_at IS NULL
+        ),
+        turn_counts AS (
+          SELECT provider, model, reasoning, COUNT(*) AS count
+          FROM per_turn
+          GROUP BY provider, model, reasoning
+          UNION ALL
+          SELECT provider, model, reasoning, turn_count AS count
+          FROM profile_stats_deleted_turns
         )
-        SELECT provider, model, reasoning, COUNT(*) AS count
-        FROM per_turn
+        SELECT provider, model, reasoning, SUM(count) AS count
+        FROM turn_counts
         GROUP BY provider, model, reasoning
         ORDER BY count DESC, provider ASC, model ASC, reasoning ASC
       `,
@@ -724,20 +760,8 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         m.mentions_json AS mentionsJson
       FROM projection_thread_messages m
       JOIN projection_threads t ON t.thread_id = m.thread_id
-      LEFT JOIN projection_projects p ON p.project_id = t.project_id
       WHERE m.role = 'user'
         AND m.source = 'native'
-        AND (
-          t.deleted_at IS NULL
-          OR EXISTS (
-            SELECT 1
-            FROM orchestration_events td
-            WHERE td.event_type = 'thread.deleted'
-              AND td.stream_id = t.thread_id
-              AND td.command_id LIKE ${THREAD_RETENTION_COMMAND_ID_PATTERN}
-          )
-        )
-        AND p.deleted_at IS NULL
         AND (
           (m.skills_json IS NOT NULL AND TRIM(m.skills_json) NOT IN ('', '[]'))
           OR (m.mentions_json IS NOT NULL AND TRIM(m.mentions_json) NOT IN ('', '[]'))
@@ -760,19 +784,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
                 NULL AS mentionsJson
               FROM projection_thread_messages m
               JOIN projection_threads t ON t.thread_id = m.thread_id
-              LEFT JOIN projection_projects p ON p.project_id = t.project_id
               WHERE m.role = 'user'
-                AND (
-                  t.deleted_at IS NULL
-                  OR EXISTS (
-                    SELECT 1
-                    FROM orchestration_events td
-                    WHERE td.event_type = 'thread.deleted'
-                      AND td.stream_id = t.thread_id
-                      AND td.command_id LIKE ${THREAD_RETENTION_COMMAND_ID_PATTERN}
-                  )
-                )
-                AND p.deleted_at IS NULL
                 AND (
                   m.text GLOB '*$[A-Za-z0-9]*'
                   OR m.text GLOB '*/[A-Za-z0-9]*'
@@ -784,34 +796,45 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       ),
     );
 
+  const queryArchivedSkillUsage = () =>
+    legacyCompatibleQuery(
+      "profileStats.archivedSkillUsage",
+      sql<ArchivedSkillUsageRow>`
+        SELECT name, kind, run_count AS runCount
+        FROM profile_stats_deleted_skills
+      `,
+    );
+
   const queryMostWorkedProject = (tz: string) =>
     legacyCompatibleQuery(
       "profileStats.mostWorkedProject",
       sql<MostWorkedProjectRow>`
+        WITH project_prompts AS (
+          SELECT
+            t.project_id AS project_id,
+            m.thread_id AS thread_id,
+            m.created_at AS created_at
+          FROM projection_thread_messages m
+          JOIN projection_threads t ON t.thread_id = m.thread_id
+          WHERE m.role = 'user'
+            AND m.source = 'native'
+          UNION ALL
+          SELECT
+            d.project_id AS project_id,
+            d.thread_id AS thread_id,
+            d.created_at AS created_at
+          FROM profile_stats_deleted_prompts d
+        )
         SELECT
           p.project_id AS projectId,
           p.title AS title,
           p.workspace_root AS workspaceRoot,
           COUNT(*) AS promptCount,
-          COUNT(DISTINCT t.thread_id) AS threadCount,
-          COUNT(DISTINCT STRFTIME('%Y-%m-%d', DATETIME(m.created_at, ${tz}))) AS activeDays,
-          MAX(m.created_at) AS lastWorkedAt
-        FROM projection_thread_messages m
-        JOIN projection_threads t ON t.thread_id = m.thread_id
-        JOIN projection_projects p ON p.project_id = t.project_id
-        WHERE m.role = 'user'
-          AND m.source = 'native'
-          AND (
-            t.deleted_at IS NULL
-            OR EXISTS (
-              SELECT 1
-              FROM orchestration_events td
-              WHERE td.event_type = 'thread.deleted'
-                AND td.stream_id = t.thread_id
-                AND td.command_id LIKE ${THREAD_RETENTION_COMMAND_ID_PATTERN}
-            )
-          )
-          AND p.deleted_at IS NULL
+          COUNT(DISTINCT e.thread_id) AS threadCount,
+          COUNT(DISTINCT STRFTIME('%Y-%m-%d', DATETIME(e.created_at, ${tz}))) AS activeDays,
+          MAX(e.created_at) AS lastWorkedAt
+        FROM project_prompts e
+        JOIN projection_projects p ON p.project_id = e.project_id
         GROUP BY p.project_id, p.title, p.workspace_root
         ORDER BY
           promptCount DESC,
@@ -835,6 +858,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       const totalThreadRows = yield* queryTotalThreads();
       const turnInsightRows = yield* queryTurnInsights();
       const skillMessageRows = yield* querySkillUsageMessages();
+      const archivedSkillRows = yield* queryArchivedSkillUsage();
       const mostWorkedProjectRows = yield* queryMostWorkedProject(tz);
 
       // ── Activity / heatmap / streaks ──
@@ -932,7 +956,8 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       });
 
       const providerTurnCounts = new Map<ProviderKind, number>();
-      // "Most used provider" should reflect actual turns, not how many threads were created.
+      // Turn-based ranking: the token-based one lives on ProfileTokenStats so the
+      // heavy token query runs once, and clients prefer it when available.
       for (const row of providerModelRows) {
         const provider = normalizeProviderKind(row.provider);
         if (provider === "unknown") {
@@ -973,7 +998,7 @@ const makeProfileStatsQuery = Effect.gen(function* () {
           : null;
 
       // ── Skills and agent mentions ──
-      const allSkillUsages = aggregateProfileSkillUsageRows(skillMessageRows);
+      const allSkillUsages = aggregateProfileSkillUsageRows(skillMessageRows, archivedSkillRows);
       const skills = allSkillUsages.slice(0, SKILL_RESULT_LIMIT);
       const totalSkillsUsed = allSkillUsages.reduce((sum, row) => sum + row.runCount, 0);
 
@@ -1021,23 +1046,8 @@ const makeProfileStatsQuery = Effect.gen(function* () {
       const tz = sqliteModifierFromUtcOffsetMinutes(input.utcOffsetMinutes);
       const todayKey = localToday(input.utcOffsetMinutes);
       const rows = yield* queryTokenActivity(tz);
-
-      const tokensByDay = new Map<string, number>();
-      const tokensByProvider = new Map<ProviderKind, number>();
-      let lifetime = 0;
-      for (const row of rows) {
-        const day = nonEmptyString(row.day);
-        const tokens = num(row.tokens);
-        if (!day || tokens <= 0) {
-          continue;
-        }
-        tokensByDay.set(day, (tokensByDay.get(day) ?? 0) + tokens);
-        lifetime += tokens;
-        const provider = normalizeProviderKind(row.provider);
-        if (provider !== "unknown") {
-          tokensByProvider.set(provider, (tokensByProvider.get(provider) ?? 0) + tokens);
-        }
-      }
+      const turnInsightRows = yield* queryTurnInsights();
+      const { tokensByDay, tokensByProvider, lifetime } = aggregateTokenActivity(rows);
 
       let peakDay: string | null = null;
       let peakDayTokens: number | null = null;
@@ -1054,13 +1064,41 @@ const makeProfileStatsQuery = Effect.gen(function* () {
         .map(([provider]) => provider);
       const available = lifetime > 0;
 
+      // Providers the user actually ran turns with but whose adapters never emit
+      // token telemetry — they cannot participate in token-based rankings, and the
+      // UI uses this list to say so instead of silently under-reporting them.
+      const providersWithTurns = new Set<ProviderKind>();
+      for (const row of turnInsightRows) {
+        const provider = normalizeProviderKind(row.provider);
+        if (provider !== "unknown") {
+          providersWithTurns.add(provider);
+        }
+      }
+      const unavailableProviders = [...providersWithTurns]
+        .filter((provider) => !tokensByProvider.has(provider))
+        .toSorted();
+
+      // "Most used provider" by tokens processed: one heavy turn is more work than
+      // many tiny ones. Percent is the share among providers with token telemetry.
+      const totalProviderTokens = [...tokensByProvider.values()].reduce(
+        (sum, tokens) => sum + tokens,
+        0,
+      );
+      const topProvider = providers[0] ?? null;
+      const topProviderPercent =
+        topProvider && totalProviderTokens > 0
+          ? percent1(tokensByProvider.get(topProvider) ?? 0, totalProviderTokens)
+          : null;
+
       return {
         available,
         lifetimeTotalTokens: available ? lifetime : null,
         peakDayTokens,
         peakDay,
         providers,
-        unavailableProviders: [],
+        unavailableProviders,
+        topProvider,
+        topProviderPercent,
         heatmapMetric: "tokens",
         heatmap: buildHeatmap(tokensByDay, todayKey),
       } satisfies ProfileTokenStats;

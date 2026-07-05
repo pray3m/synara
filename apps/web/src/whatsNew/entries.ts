@@ -22,6 +22,168 @@ import type { WhatsNewEntry } from "./logic";
 
 export const WHATS_NEW_ENTRIES: readonly WhatsNewEntry[] = [
   {
+    version: "0.3.9",
+    date: "Jul 5",
+    features: [
+      {
+        id: "thread-export-zip",
+        title: "Export a thread as a ZIP",
+        description:
+          "Type `/export` in a saved, idle chat to download a portable archive with the full thread projection and a readable Markdown transcript.",
+        details:
+          "The export route streams `thread.json` and `transcript.md` through the server with shared eligibility checks, desktop-friendly CORS/error handling, large-thread history hydration, and browser download support from both typed slash commands and the command menu.",
+      },
+      {
+        id: "archived-profile-stats",
+        title: "Archived stats survive cleanup",
+        description:
+          "Deleting or purging old threads no longer erases their lifetime contribution to profile stats, so cleanup keeps your usage history intact.",
+        details:
+          "Thread deletion now snapshots profile aggregates before purging rows, merges archived stats back into profile queries, preserves command receipts, cleans checkpoint refs carefully, and includes a migration plus purge/retention regression coverage.",
+      },
+      {
+        id: "active-turn-working-header",
+        title: "Active turns show steady work timing",
+        description:
+          "While an agent is working, the transcript now keeps a stable 'Working for' header at the top of the active turn instead of relying only on a transient shimmer row.",
+        details:
+          "MessagesTimeline now inserts a stable active-turn header for duration display while preserving the existing setup shimmer, making live turns easier to scan and less jumpy during layout updates.",
+      },
+      {
+        id: "terminal-shutdown-escalation",
+        title: "Terminal shutdown is more reliable",
+        description:
+          "Synara is better at shutting down stubborn terminal process trees without returning early while child processes are still alive.",
+        details:
+          "TerminalManager now routes shutdown through a dedicated process-tree killer with SIGTERM-to-SIGKILL escalation, cancellation when processes exit cleanly, nested process activity coverage, and tests for disposal timing.",
+      },
+      {
+        id: "acp-resume-message-ids",
+        title: "Resumed ACP replies stay distinct",
+        description:
+          "ACP-backed sessions are less likely to lose assistant replies after a restart or resume because fallback assistant message IDs no longer collide across runtime instances.",
+        details:
+          "A per-runtime instance ID is included in fallback ACP assistant item IDs, preventing resumed sessions with the same provider session ID and segment index from overwriting earlier transcript messages.",
+      },
+      {
+        id: "git-writing-model-picker",
+        title: "Git writing respects OpenCode and Kilo models",
+        description:
+          "Git commit, diff summary, and PR text generation now honor runtime-discovered OpenCode and Kilo model selections from Settings.",
+        details:
+          "Settings now persists discovered Git-writing model options, git actions pass the chosen provider/model through the shared contracts, and query cache keys include the text-generation selection so generated commit/PR text routes to the intended backend.",
+      },
+    ],
+  },
+  {
+    version: "0.3.8",
+    date: "Jul 3",
+    features: [
+      {
+        id: "grok-resume-replay-resilience",
+        title: "Grok resume handles long sessions more safely",
+        description:
+          "Grok and other ACP-backed sessions are better at resuming after compaction or reconnects without replaying messages into the wrong runtime or growing memory unexpectedly.",
+        details:
+          "ACP resume now drops replay before the event consumer is attached, seeds compaction quiet windows from response timing, hardens provider/runtime ingestion, and covers JSON-RPC/session-runtime edge cases that previously made resume replay fragile.",
+      },
+      {
+        id: "worktree-setup-status",
+        title: "Worktree setup failures recover cleanly",
+        description:
+          "When a worktree setup step fails, Synara now shows the failed setup state, keeps the timeline from looking stuck, and resets the local dispatch when you send again.",
+        details:
+          "ChatView and timeline setup snapshots now carry explicit setup step status, targeted cleanup for failed local dispatches, and focused browser/unit coverage for new-turn reset and setup rows.",
+      },
+      {
+        id: "automation-sent-label",
+        title: "Automation messages are labeled",
+        description:
+          "Prompts sent by an automation now carry a lightweight 'Sent via Automation' label above the bubble, so you can tell at a glance which turns you typed and which a scheduled or heartbeat run kicked off.",
+        details:
+          "User turns dispatched by the automation engine now persist a `dispatchOrigin` on the message end to end (command → event → projection → snapshot), and the transcript renders a clock-marked chip that mirrors the existing steering label.",
+      },
+      {
+        id: "approval-choice-polish",
+        title: "Approval prompts are easier to answer",
+        description:
+          "Pending approvals now use a clearer shared choice-row layout, with steadier panel behavior and browser coverage for allow/deny decisions.",
+        details:
+          "ComposerPendingApprovalPanel now shares ComposerChoiceRow structure with pending inputs, tracks decision actions in browser tests, and trims duplicated action styling.",
+      },
+      {
+        id: "startup-keepalive-gating",
+        title: "Startup does less surprise work",
+        description:
+          "Synara avoids unnecessary provider refresh work during startup and gates Claude keepalive behavior more carefully, so opening the app is calmer and less likely to fight credential checks.",
+        details:
+          "Server startup no longer runs provider refresh eagerly, Claude keepalive respects auth-state timing, provider usage hooks handle inactive summaries more predictably, and related settings/server query invalidation paths have tests.",
+      },
+      {
+        id: "collapsed-work-timing",
+        title: "Folded work rows report time more accurately",
+        description:
+          "Collapsed transcript segments now show a 'Worked for' duration that spans the whole folded section, not just a single row inside it.",
+        details:
+          "Timeline duration grouping now tracks folded row boundaries and tests the aggregate timing behavior so compact transcripts better match what actually happened.",
+      },
+    ],
+  },
+  {
+    version: "0.3.7",
+    date: "Jul 2",
+    features: [
+      {
+        id: "update-download-progress",
+        title: "Update downloads show their progress",
+        description:
+          "When Synara is downloading a desktop update, the sidebar update button now shows a live percent badge so you can tell whether it is moving or nearly ready.",
+        details:
+          "The desktop update helper now clamps reported download percentages, hides them outside active downloads, and covers edge cases for null, negative, oversized, and fractional progress values.",
+      },
+      {
+        id: "claude-auth-status-stability",
+        title: "Claude auth checks are less jumpy",
+        description:
+          "Claude sessions are less likely to be marked logged out during refresh-token races, especially when health checks and the macOS credential keepalive run near the same time.",
+        details:
+          "`claude auth status` is now serialized through a shared lock, retried once for structured false negatives, and can fall back to verified local credential metadata before showing an unauthenticated state.",
+      },
+      {
+        id: "checkpoint-baseline-resilience",
+        title: "Turn checkpoints are harder to confuse",
+        description:
+          "Synara preserves the first pre-turn snapshot more carefully, so transcript diffs and restore points better match what was on disk when you pressed send.",
+        details:
+          "Checkpoint capture now has single-flight behavior per repo/ref, a bounded capture timeout, first-writer-wins `skipIfExists` baselines, and extra recovery when a startup or backup path missed the original message baseline.",
+      },
+      {
+        id: "chat-sidebar-polish",
+        title: "The sidebar chat list behaves more naturally",
+        description:
+          "The Chats section now lives with the rest of the scrollable sidebar content, has a familiar disclosure chevron, and keeps the footer focused on account/update controls.",
+        details:
+          "Sidebar chat collapse state now exposes `aria-expanded`, reuses the shared disclosure chevron, and separates chat rows from the footer while preserving sort and new-chat actions.",
+      },
+      {
+        id: "first-send-environment-panel",
+        title: "First sends keep the workspace calm",
+        description:
+          "Starting from an empty chat no longer opens the Environment panel by surprise after the first message turns the landing view into a transcript.",
+        details:
+          "ChatView now records a closed environment-panel preference when sending from the centered empty landing, preventing the default-open policy from popping the panel into a just-started conversation.",
+      },
+      {
+        id: "provider-health-parser-coverage",
+        title: "Provider health parsing is easier to trust",
+        description:
+          "Provider CLI output handling and Claude auth interpretation now have clearer, isolated parsing paths with more focused tests around failure and metadata cases.",
+        details:
+          "Generic CLI-output helpers moved out of ProviderHealth, Claude auth parsing moved into a pure module, and new tests cover auth JSON markers, credential summaries, the auth-status lock, checkpoint single-flight behavior, and provider health edge cases.",
+      },
+    ],
+  },
+  {
     version: "0.3.6",
     date: "Jun 30",
     features: [
