@@ -1,3 +1,7 @@
+// FILE: ServerAuthPolicy.test.ts
+// Purpose: Verifies bind-aware auth policy and bootstrap method selection.
+// Depends on: ServerConfig test layer and ServerAuthPolicyLive.
+
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
@@ -55,6 +59,17 @@ describe("ServerAuthPolicyLive", () => {
     expect(descriptor.bootstrapMethods).toEqual(["desktop-bootstrap", "one-time-token"]);
   });
 
+  it("treats an omitted desktop host as remote because Node binds all interfaces", async () => {
+    const descriptor = await getDescriptor.pipe(
+      Effect.provide(makeLayer({ mode: "desktop", host: undefined })),
+      Effect.scoped,
+      Effect.runPromise,
+    );
+
+    expect(descriptor.policy).toBe("remote-reachable");
+    expect(descriptor.bootstrapMethods).toEqual(["desktop-bootstrap", "one-time-token"]);
+  });
+
   it("uses loopback-browser policy for loopback web mode", async () => {
     const descriptor = await getDescriptor.pipe(
       Effect.provide(makeLayer({ mode: "web", host: "localhost" })),
@@ -70,6 +85,17 @@ describe("ServerAuthPolicyLive", () => {
   it("uses remote-reachable policy for non-loopback web mode", async () => {
     const descriptor = await getDescriptor.pipe(
       Effect.provide(makeLayer({ mode: "web", host: "192.168.1.50" })),
+      Effect.scoped,
+      Effect.runPromise,
+    );
+
+    expect(descriptor.policy).toBe("remote-reachable");
+    expect(descriptor.bootstrapMethods).toEqual(["one-time-token"]);
+  });
+
+  it("treats an omitted web host as remote because Node binds all interfaces", async () => {
+    const descriptor = await getDescriptor.pipe(
+      Effect.provide(makeLayer({ mode: "web", host: undefined })),
       Effect.scoped,
       Effect.runPromise,
     );

@@ -350,7 +350,7 @@ describe("createHttpRequestHandler", () => {
     });
   });
 
-  it("serves cached native editor icons before dev/static fallback", async () => {
+  it("rejects native editor icon requests when no auth token is configured", async () => {
     const homeDir = makeTempDir("synara-http-editor-icon-home-");
     const fixture = writeNativeEditorIconFixture(homeDir);
     if (!fixture) return;
@@ -362,6 +362,28 @@ describe("createHttpRequestHandler", () => {
       const response = await fetch(`${origin}${EDITOR_ICON_ROUTE_PATH}?id=${fixture.editorId}`, {
         redirect: "manual",
       });
+
+      expect(response.status).toBe(401);
+    });
+  });
+
+  it("serves cached native editor icons when the configured auth token matches", async () => {
+    const homeDir = makeTempDir("synara-http-editor-icon-home-");
+    const fixture = writeNativeEditorIconFixture(homeDir);
+    if (!fixture) return;
+
+    const config = await makeConfig({
+      devUrl: new URL("http://localhost:5173/"),
+      homeDir,
+      authToken: "desktop-secret",
+    });
+    const handler = await makeHandler(config);
+
+    await withServer(handler, async (origin) => {
+      const response = await fetch(
+        `${origin}${EDITOR_ICON_ROUTE_PATH}?id=${fixture.editorId}&token=desktop-secret`,
+        { redirect: "manual" },
+      );
 
       expect(response.status).toBe(200);
       expect(response.headers.get("cache-control")).toBe("public, max-age=86400");

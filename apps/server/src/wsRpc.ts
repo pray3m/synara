@@ -1281,12 +1281,13 @@ export const websocketRpcRouteLayer = Layer.effectDiscard(
           return HttpServerResponse.text("Forbidden", { status: 403 });
         }
         const legacyToken = url.searchParams.get("token");
-        const authenticatedSession =
-          !config.authToken || legacyToken === config.authToken
-            ? null
-            : yield* serverAuth.authenticateWebSocketUpgrade(makeEffectAuthRequest(request));
+        const legacyAuthorized = Boolean(config.authToken) && legacyToken === config.authToken;
+        const authenticatedSession = legacyAuthorized
+          ? null
+          : yield* serverAuth.authenticateWebSocketUpgrade(makeEffectAuthRequest(request));
 
         if (!authenticatedSession) {
+          // Reached only when the legacy token matched a configured token.
           return yield* rpcWebSocketHttpEffect;
         }
 

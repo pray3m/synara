@@ -189,8 +189,11 @@ export function isLegacyTokenAuthorized(input: {
   readonly config: ServerConfigShape;
   readonly url: URL;
 }): boolean {
-  const legacyToken = input.url.searchParams.get("token");
-  return !input.config.authToken || legacyToken === input.config.authToken;
+  // Only the legacy query-token path is decided here. When no token is
+  // configured, this path grants nothing; callers fall through to the real
+  // session auth instead of allowing the request.
+  if (!input.config.authToken) return false;
+  return input.url.searchParams.get("token") === input.config.authToken;
 }
 
 function encodeCookie(input: {

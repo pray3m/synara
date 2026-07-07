@@ -1,14 +1,18 @@
+// FILE: ServerAuthPolicy.ts
+// Purpose: Derives the browser/session authentication policy from server bind settings.
+// Depends on: ServerConfig and shared startup host classification.
+
 import type { ServerAuthDescriptor } from "@t3tools/contracts";
 import { Effect, Layer } from "effect";
 
 import { ServerConfig } from "../../config";
-import { isLoopbackHost, isWildcardHost } from "../../startupAccess";
+import { isRemoteReachableHost } from "../../startupAccess";
 import { ServerAuthPolicy, type ServerAuthPolicyShape } from "../Services/ServerAuthPolicy";
 import { resolveSessionCookieName } from "../utils";
 
 export const makeServerAuthPolicy = Effect.gen(function* () {
   const config = yield* ServerConfig;
-  const remoteReachable = isWildcardHost(config.host) || !isLoopbackHost(config.host);
+  const remoteReachable = isRemoteReachableHost(config.host);
 
   const policy: ServerAuthDescriptor["policy"] =
     config.mode === "desktop"

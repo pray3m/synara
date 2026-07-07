@@ -23,6 +23,7 @@ The Synara CLI accepts the following configuration options, available either as 
 - Always set `--auth-token` before exposing the server outside localhost.
 - Treat the token like a password.
 - Prefer binding to trusted interfaces (LAN IP or Tailnet IP) instead of opening all interfaces unless needed.
+- Synara refuses to start on a non-loopback host without `--auth-token` (unless running in `desktop` mode).
 
 ## 1) Build + run server for remote access
 

@@ -32,7 +32,7 @@ import { ProviderSessionReaperLive } from "./provider/Layers/ProviderSessionReap
 import { Server } from "./effectServer";
 import { ServerLoggerLive } from "./serverLogger";
 import { ServerSettingsService } from "./serverSettings";
-import { formatHostForUrl, isWildcardHost } from "./startupAccess";
+import { formatHostForUrl, isWildcardHost, requiresAuthTokenForBind } from "./startupAccess";
 import { AnalyticsServiceLayerLive } from "./telemetry/Layers/AnalyticsService";
 import { AnalyticsService } from "./telemetry/Services/AnalyticsService";
 import { OrchestrationEngineService } from "./orchestration/Services/OrchestrationEngine";
@@ -303,6 +303,23 @@ const makeServerProgram = (input: CliInput) =>
         {
           hint: "Run `bun run --cwd apps/web build` or set VITE_DEV_SERVER_URL for dev mode.",
         },
+      );
+    }
+
+    if (
+      requiresAuthTokenForBind({
+        host: config.host,
+        authToken: config.authToken,
+        mode: config.mode,
+      })
+    ) {
+      const bindHost = config.host ?? "<unspecified/all interfaces>";
+      return yield* Effect.fail(
+        new StartupError({
+          message:
+            `Refusing to bind to a non-loopback host (${bindHost}) without --auth-token. ` +
+            `Set --auth-token (or T3CODE_AUTH_TOKEN), or bind to localhost. See REMOTE.md.`,
+        }),
       );
     }
 
