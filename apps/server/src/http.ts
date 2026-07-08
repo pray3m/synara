@@ -7,6 +7,7 @@ import {
   AuthCreatePairingCredentialInput,
   AuthRevokeClientSessionInput,
   AuthRevokePairingLinkInput,
+  type ProviderInstanceId,
   ThreadId,
 } from "@t3tools/contracts";
 import { EDITOR_ICON_ROUTE_PATH } from "@t3tools/shared/editorIcons";
@@ -587,7 +588,7 @@ export const localImageEffectRouteLayer = HttpRouter.add(
           Effect.catch(() =>
             Effect.succeed({
               configuredHomePaths: [] as readonly CodexGeneratedImageHomeCandidate[],
-              enabledProviderInstanceIds: new Set(),
+              enabledProviderInstanceIds: new Set<ProviderInstanceId>(),
             }),
           ),
         )
