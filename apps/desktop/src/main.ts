@@ -2014,7 +2014,6 @@ function startBackend(): void {
   backendListeningDetector = listeningDetector;
   backendProcess = child;
   const backendBaseUrl = backendHttpUrl;
-  const backendStartedAtMs = Date.now();
   let backendSessionClosed = false;
   const closeBackendSession = (details: string) => {
     if (backendSessionClosed) return;
@@ -2051,7 +2050,6 @@ function startBackend(): void {
       backendProcess = null;
     }
     closeBackendSession(`pid=${child.pid ?? "unknown"} error=${error.message}`);
-    backendRestartBackoff.resetAfterStableRun(Date.now() - backendStartedAtMs);
     scheduleBackendRestart(error.message);
   });
 
@@ -2072,7 +2070,6 @@ function startBackend(): void {
       `pid=${child.pid ?? "unknown"} code=${code ?? "null"} signal=${signal ?? "null"}`,
     );
     if (isQuitting) return;
-    backendRestartBackoff.resetAfterStableRun(Date.now() - backendStartedAtMs);
     const reason = `code=${code ?? "null"} signal=${signal ?? "null"}`;
     scheduleBackendRestart(reason);
   });

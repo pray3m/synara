@@ -851,19 +851,6 @@ const make = Effect.gen(function* () {
     const desiredProvider =
       desiredProviderInstance?.driver ??
       inferLegacyProviderKindFromModelSelection(desiredModelSelection);
-    const desiredRoutedModelSelection = desiredProviderInstance
-      ? ({
-          ...desiredModelSelection,
-          instanceId: desiredProviderInstance.instanceId,
-        } as ModelSelection)
-      : desiredModelSelection;
-    const desiredInstanceProviderOptions = desiredProviderInstance
-      ? providerStartOptionsFromInstance(desiredProviderInstance)
-      : undefined;
-    const desiredEffectiveProviderOptions = mergeProviderStartOptions(
-      options?.providerOptions,
-      desiredInstanceProviderOptions,
-    );
     const currentProviderInstanceId =
       thread.session?.providerInstanceId ?? resolveModelSelectionInstanceId(thread.modelSelection);
     const requestedProviderInstanceChanged =
@@ -888,6 +875,30 @@ const make = Effect.gen(function* () {
         detail: `Thread '${threadId}' is bound to provider instance '${currentProviderInstanceId}' and cannot switch to '${desiredProviderInstanceId}'.`,
       });
     }
+    if (!desiredProviderInstance) {
+      return yield* new ProviderAdapterRequestError({
+        provider: desiredProvider,
+        method: "thread.turn.start",
+        detail: `Unknown provider instance '${desiredProviderInstanceId}'.`,
+      });
+    }
+    if (!desiredProviderInstance.enabled) {
+      return yield* new ProviderAdapterRequestError({
+        provider: desiredProvider,
+        method: "thread.turn.start",
+        detail: `Provider instance '${desiredProviderInstance.instanceId}' is disabled.`,
+      });
+    }
+    const desiredRoutedModelSelection = {
+      ...desiredModelSelection,
+      instanceId: desiredProviderInstance.instanceId,
+    } as ModelSelection;
+    const desiredInstanceProviderOptions =
+      providerStartOptionsFromInstance(desiredProviderInstance);
+    const desiredEffectiveProviderOptions = mergeProviderStartOptions(
+      options?.providerOptions,
+      desiredInstanceProviderOptions,
+    );
     const preferredProvider: ProviderKind = desiredProvider;
     const effectiveCwd = yield* resolveProjectedThreadWorkspaceCwd(thread);
     const workspaceState = resolveThreadWorkspaceState({
