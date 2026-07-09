@@ -757,10 +757,16 @@ const make = Effect.gen(function* () {
       // Claude restarts resume via `--resume`, which replays the whole conversation
       // as uncached input tokens. Only spawn-fixed options (effort/settings) may
       // force that; model and context-window changes switch in-session via setModel.
+      // When the dispatch cache has no entry (the session was started by a turn
+      // without a selection), compare against the projected thread selection the
+      // session was actually spawned from so spawn-fixed changes still restart.
       const shouldRestartForModelSelectionChange =
         requestedModelSelection !== undefined &&
         (currentProvider === "claudeAgent"
-          ? claudeSelectionRequiresRestart(previousModelSelection, requestedModelSelection)
+          ? claudeSelectionRequiresRestart(
+              previousModelSelection ?? thread.modelSelection,
+              requestedModelSelection,
+            )
           : currentProvider === "grok" &&
             !Equal.equals(previousModelSelection, requestedModelSelection));
 
@@ -794,6 +800,7 @@ const make = Effect.gen(function* () {
       const restartedSession = yield* startProviderSession(
         resumeCursor !== undefined ? { resumeCursor } : undefined,
       );
+      threadModelSelections.set(threadId, desiredModelSelection);
       yield* Effect.logInfo("provider command reactor restarted provider session", {
         threadId,
         previousSessionId: existingSessionThreadId,
@@ -817,6 +824,7 @@ const make = Effect.gen(function* () {
         runtimeMode: desiredRuntimeMode,
       });
       if (forked) {
+        threadModelSelections.set(threadId, desiredModelSelection);
         const forkedSession =
           (yield* resolveActiveSession(threadId)) ??
           ({
@@ -840,6 +848,10 @@ const make = Effect.gen(function* () {
     }
 
     const startedSession = yield* startProviderSession(undefined);
+    // Record the exact selection the session was spawned with so later
+    // restart-necessity checks compare against the live spawn state even when
+    // the spawning dispatch carried no explicit model selection.
+    threadModelSelections.set(threadId, desiredModelSelection);
     yield* bindSessionToThread(startedSession);
     return startedSession.threadId;
   });
