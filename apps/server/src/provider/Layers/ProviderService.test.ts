@@ -2016,9 +2016,9 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
   it.effect("recovers provider-instance sessions from current settings after options clear", () =>
     Effect.gen(function* () {
-    const tempDir = fs.mkdtempSync(
-      path.join(os.tmpdir(), "synara-provider-service-instance-clear-"),
-    );
+      const tempDir = fs.mkdtempSync(
+        path.join(os.tmpdir(), "synara-provider-service-instance-clear-"),
+      );
       const dbPath = path.join(tempDir, "orchestration.sqlite");
       const threadId = asThreadId("thread-instance-options-clear");
       const persistenceLayer = makeSqlitePersistenceLive(dbPath);
@@ -2130,7 +2130,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
 
   it.effect("reuses resume cursor when hydrated instance options only add redacted fields", () =>
     Effect.gen(function* () {
-    const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "synara-provider-service-redacted-"));
+      const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "synara-provider-service-redacted-"));
       const dbPath = path.join(tempDir, "orchestration.sqlite");
       const threadId = asThreadId("thread-redacted-instance-options");
       const persistenceLayer = makeSqlitePersistenceLive(dbPath);

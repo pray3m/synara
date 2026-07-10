@@ -738,9 +738,7 @@ interface ClaudeRequestedSpawnOptions {
   readonly fastMode: boolean;
 }
 
-function claudeRequestedSpawnOptions(
-  selection: ModelSelection,
-): ClaudeRequestedSpawnOptions {
+function claudeRequestedSpawnOptions(selection: ModelSelection): ClaudeRequestedSpawnOptions {
   const thinking = getModelSelectionBooleanOptionValue(selection, "thinking");
   return {
     effort: trimOrNull(getModelSelectionStringOptionValue(selection, "effort") ?? null),
@@ -749,10 +747,7 @@ function claudeRequestedSpawnOptions(
   };
 }
 
-function sameClaudeRequestedSpawnOptions(
-  previous: ModelSelection,
-  next: ModelSelection,
-): boolean {
+function sameClaudeRequestedSpawnOptions(previous: ModelSelection, next: ModelSelection): boolean {
   const prev = claudeRequestedSpawnOptions(previous);
   const desired = claudeRequestedSpawnOptions(next);
   return (
@@ -774,10 +769,7 @@ function claudeSpawnProfile(selection: ModelSelection) {
   const thinking = getModelSelectionBooleanOptionValue(selection, "thinking");
   return {
     effectiveEffort: getEffectiveClaudeCodeEffort(effort),
-    thinking:
-      typeof thinking === "boolean" && caps.supportsThinkingToggle
-        ? thinking
-        : undefined,
+    thinking: typeof thinking === "boolean" && caps.supportsThinkingToggle ? thinking : undefined,
     fastMode:
       getModelSelectionBooleanOptionValue(selection, "fastMode") === true && caps.supportsFastMode,
     ultracode: effort === "ultracode" && hasEffortLevel(caps, "xhigh"),

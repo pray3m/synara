@@ -1033,8 +1033,8 @@ const make = Effect.gen(function* () {
         : shouldRestartForProviderOptionsChange({
             requestedProvider: desiredProvider,
             previousProviderOptions,
-          requestedProviderOptions: desiredEffectiveProviderOptions,
-        });
+            requestedProviderOptions: desiredEffectiveProviderOptions,
+          });
 
       if (
         !runtimeModeChanged &&

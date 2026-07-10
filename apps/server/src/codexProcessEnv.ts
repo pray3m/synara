@@ -301,11 +301,7 @@ function resolveCodexOverlayResolution(input: {
     hasDedicatedAccountHome,
     ...(shadowHomePath ? { shadowHomePath } : {}),
     ...(accountSegment ? { accountSegment } : {}),
-    overlayHomePath: resolveSynaraCodexHomeOverlayPath(
-      input.env,
-      sourceHomePath,
-      accountSegment,
-    ),
+    overlayHomePath: resolveSynaraCodexHomeOverlayPath(input.env, sourceHomePath, accountSegment),
   };
 }
 
@@ -324,10 +320,7 @@ function uniqueResolvedPaths(paths: readonly string[]): string[] {
 }
 
 export function resolveCodexAuthTracking(
-  input: Pick<
-    CodexProcessEnvInput,
-    "env" | "homePath" | "shadowHomePath" | "accountId"
-  > = {},
+  input: Pick<CodexProcessEnvInput, "env" | "homePath" | "shadowHomePath" | "accountId"> = {},
 ): CodexAuthTracking {
   const env = { ...(input.env ?? process.env) };
   const resolution = resolveCodexOverlayResolution({
@@ -389,8 +382,7 @@ export function readCodexAuthTrackingFingerprint(tracking: CodexAuthTracking): s
   // omit that redundant state. The authoritative role is never suppressed:
   // deleting/logging out of the source must invalidate a stale copied overlay.
   const normalizedEffective =
-    effective === authoritative ||
-    (authoritative.startsWith("sha256:") && effective === "missing")
+    effective === authoritative || (authoritative.startsWith("sha256:") && effective === "missing")
       ? undefined
       : effective;
   return JSON.stringify({
@@ -553,9 +545,7 @@ function ensureCodexOverlaySymlink(
   }
 }
 
-function removeStaleMirroredAuthWhenSourceIsMissing(
-  resolution: CodexOverlayResolution,
-): void {
+function removeStaleMirroredAuthWhenSourceIsMissing(resolution: CodexOverlayResolution): void {
   // Shared-home account overlays own their auth file. It is not a mirror and
   // must survive even while the shared/default source account is logged out.
   if (
@@ -812,7 +802,10 @@ export function buildCodexProcessLaunchContext(
   });
   const effectiveEnv =
     overlayHomePath || input.homePath
-      ? { ...baseEnv, CODEX_HOME: overlayHomePath ?? resolveBaseCodexHomePath(baseEnv, input.homePath) }
+      ? {
+          ...baseEnv,
+          CODEX_HOME: overlayHomePath ?? resolveBaseCodexHomePath(baseEnv, input.homePath),
+        }
       : baseEnv;
   const platform = input.platform ?? process.platform;
 

@@ -495,7 +495,10 @@ describe("buildCodexProcessEnv account overlays", () => {
 
     assert.ok(env.CODEX_HOME);
     assert.notStrictEqual(env.CODEX_HOME, fixture.shadowHomePath);
-    assert.match(readFileSync(path.join(env.CODEX_HOME, "config.toml"), "utf8"), /model = "gpt-5\.4"/);
+    assert.match(
+      readFileSync(path.join(env.CODEX_HOME, "config.toml"), "utf8"),
+      /model = "gpt-5\.4"/,
+    );
     assert.strictEqual(
       path.resolve(readlinkSync(path.join(env.CODEX_HOME, "auth.json"))),
       path.resolve(path.join(fixture.shadowHomePath, "auth.json")),

@@ -846,9 +846,7 @@ function codexProcessEnvInputForOptions(
   options: CodexDiscoveryOptions | undefined,
 ): CodexProcessEnvInput {
   return {
-    ...(options?.environment
-      ? { env: { ...process.env, ...options.environment } }
-      : {}),
+    ...(options?.environment ? { env: { ...process.env, ...options.environment } } : {}),
     ...(options?.homePath ? { homePath: options.homePath } : {}),
     ...(options?.shadowHomePath ? { shadowHomePath: options.shadowHomePath } : {}),
     ...(options?.accountId ? { accountId: options.accountId } : {}),

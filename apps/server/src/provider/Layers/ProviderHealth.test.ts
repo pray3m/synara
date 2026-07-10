@@ -1419,11 +1419,7 @@ it.layer(NodeServices.layer)("ProviderHealth", (it) => {
           return previous;
         }),
         () =>
-          makeCheckClaudeProviderStatus(
-            undefined,
-            "claude",
-            "/tmp/claude-home-work",
-          ).pipe(
+          makeCheckClaudeProviderStatus(undefined, "claude", "/tmp/claude-home-work").pipe(
             Effect.tap((status) => Effect.sync(() => assert.strictEqual(status.status, "ready"))),
             Effect.provide(
               mockSpawnerLayer((args, _command, env) => {
