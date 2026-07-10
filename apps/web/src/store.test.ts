@@ -673,7 +673,7 @@ describe("store pure functions", () => {
         projectId,
         title: "Stale project thread",
         modelSelection: {
-          provider: "codex",
+          instanceId: "codex",
           model: "gpt-5.3-codex",
         },
         runtimeMode: DEFAULT_RUNTIME_MODE,

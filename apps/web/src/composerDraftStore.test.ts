@@ -2524,7 +2524,7 @@ describe("composerDraftStore sticky composer settings", () => {
       },
       useComposerDraftStore.getState(),
     ) as {
-      stickyModelSelectionByProvider: Partial<Record<ModelSelection["provider"], ModelSelection>>;
+      stickyModelSelectionByProvider: Partial<Record<ProviderKind, ModelSelection>>;
     };
 
     expect(merged.stickyModelSelectionByProvider.claudeAgent).toEqual(
