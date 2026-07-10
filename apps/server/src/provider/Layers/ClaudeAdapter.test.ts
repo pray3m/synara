@@ -3630,7 +3630,7 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-opus-4-8",
         },
       });
@@ -3638,7 +3638,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: session.threadId,
         input: "hello",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-opus-4-8",
         },
         attachments: [],
@@ -3686,9 +3686,9 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-opus-4-8",
-          options: { contextWindow: "1m" },
+          options: [{ id: "contextWindow", value: "1m" }],
         },
       });
 
@@ -3718,7 +3718,7 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
         },
       });
@@ -3762,7 +3762,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: session.threadId,
         input: "continue",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
         },
         attachments: [],
@@ -3780,9 +3780,9 @@ describe("ClaudeAdapterLive", () => {
         threadId: session.threadId,
         input: "continue with the larger window",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
-          options: { contextWindow: "1m" },
+          options: [{ id: "contextWindow", value: "1m" }],
         },
         attachments: [],
       });
@@ -3793,7 +3793,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: session.threadId,
         input: "switch",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-opus-4-6",
         },
         attachments: [],
@@ -3805,7 +3805,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: session.threadId,
         input: "back to fable",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
         },
         attachments: [],
@@ -3835,9 +3835,9 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
-          options: { contextWindow: "1m" },
+          options: [{ id: "contextWindow", value: "1m" }],
         },
       });
       const firstQuery = harness.queries[0];
@@ -3864,9 +3864,9 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
-          options: { contextWindow: "1m" },
+          options: [{ id: "contextWindow", value: "1m" }],
         },
         resumeCursor: activeAfterFallback?.resumeCursor,
       });
@@ -3881,9 +3881,9 @@ describe("ClaudeAdapterLive", () => {
         threadId: resumedSession.threadId,
         input: "continue after resume",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-fable-5",
-          options: { contextWindow: "1m" },
+          options: [{ id: "contextWindow", value: "1m" }],
         },
         attachments: [],
       });
@@ -3902,7 +3902,7 @@ describe("ClaudeAdapterLive", () => {
         threadId: THREAD_ID,
         provider: "claudeAgent",
         runtimeMode: "full-access",
-        modelSelection: { provider: "claudeAgent", model: "claude-opus-4-8" },
+        modelSelection: { instanceId: "claudeAgent", model: "claude-opus-4-8" },
       });
       const firstQuery = harness.queries[0];
       assert.ok(firstQuery);
@@ -3913,9 +3913,9 @@ describe("ClaudeAdapterLive", () => {
           provider: "claudeAgent",
           runtimeMode: "full-access",
           modelSelection: {
-            provider: "claudeAgent",
+            instanceId: "claudeAgent",
             model: "claude-opus-4-8",
-            options: { effort: "max" },
+            options: [{ id: "effort", value: "max" }],
           },
         }),
       );
@@ -4042,9 +4042,9 @@ describe("ClaudeAdapterLive", () => {
         provider: "claudeAgent",
         runtimeMode: "full-access",
         modelSelection: {
-          provider: "claudeAgent",
+          instanceId: "claudeAgent",
           model: "claude-opus-4-6",
-          options: { contextWindow: "1m" },
+          options: [{ id: "contextWindow", value: "1m" }],
         },
       });
       yield* adapter.sendTurn({
