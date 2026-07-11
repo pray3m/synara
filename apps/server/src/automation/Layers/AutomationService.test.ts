@@ -40,6 +40,7 @@ import { SqlitePersistenceMemory } from "../../persistence/Layers/Sqlite.ts";
 import { AutomationRepository } from "../../persistence/Services/AutomationRepository.ts";
 import { ProjectionTurnRepository } from "../../persistence/Services/ProjectionTurns.ts";
 import { ServerSettingsService } from "../../serverSettings.ts";
+import { unresolvedAutomationInstanceId } from "@synara/shared/providerInstances";
 import { AutomationService, type AutomationServiceShape } from "../Services/AutomationService.ts";
 import {
   AutomationServiceLive,
@@ -546,6 +547,53 @@ layer("AutomationService", (it) => {
       assert.strictEqual(created.runtimeMode, "approval-required");
       assert.strictEqual(listed.definitions.length, 1);
       assert.strictEqual(listed.definitions[0]?.id, created.id);
+    }),
+  );
+
+  it.effect("blocks unresolved automation identities across enable, run-now, and dispatch", () =>
+    Effect.gen(function* () {
+      resetHarness();
+      const service = yield* AutomationService;
+      const repository = yield* AutomationRepository;
+      const unresolvedId = unresolvedAutomationInstanceId("codex");
+      const created = yield* service.create({ ...createInput("local"), enabled: false });
+      const tombstone = yield* repository.saveDefinition({
+        ...created,
+        enabled: false,
+        nextRunAt: null,
+        modelSelection: {
+          instanceId: unresolvedId,
+          model: "legacy-automation-unresolved",
+        },
+      });
+
+      const edited = yield* service.update({ id: tombstone.id, name: "Needs account repair" });
+      assert.strictEqual(edited.enabled, false);
+
+      const enableError = yield* service
+        .update({ id: tombstone.id, enabled: true })
+        .pipe(Effect.flip);
+      assert.match(enableError.message, /unresolved legacy provider account/);
+
+      const runNowError = yield* service.runNow({ automationId: tombstone.id }).pipe(Effect.flip);
+      assert.match(runNowError.message, /unresolved legacy provider account/);
+      assert.strictEqual(dispatchedCommands.length, 0);
+
+      yield* repository.saveDefinition({
+        ...tombstone,
+        enabled: true,
+        schedule: { type: "once", runAt: now },
+        nextRunAt: now,
+      });
+      const scheduled = yield* service.runDueOnce({
+        now,
+        limit: 10,
+        leaseOwnerId: "unresolved-identity-test",
+      });
+      assert.strictEqual(scheduled.length, 1);
+      assert.strictEqual(scheduled[0]?.run.status, "failed");
+      assert.match(scheduled[0]?.run.error ?? "", /unresolved legacy provider account/);
+      assert.strictEqual(dispatchedCommands.length, 0);
     }),
   );
 

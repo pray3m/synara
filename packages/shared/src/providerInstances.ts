@@ -52,6 +52,7 @@ type MutableProviderInstanceConfigMap = Record<string, ProviderInstanceConfig>;
 type MutableProviderStartOptions = Partial<Record<ProviderKind, unknown>>;
 const PROVIDER_INSTANCE_ID_MAX_CHARS = 64;
 const CODEX_ACCOUNT_INSTANCE_PREFIX = "codex_";
+const UNRESOLVED_AUTOMATION_INSTANCE_PREFIX = "synara_unresolved_automation_";
 
 function providerInstanceId(value: string): ProviderInstanceId {
   return value as ProviderInstanceId;
@@ -59,6 +60,16 @@ function providerInstanceId(value: string): ProviderInstanceId {
 
 function providerDriverKind(value: string): ProviderDriverKind {
   return value as ProviderDriverKind;
+}
+
+export function unresolvedAutomationInstanceId(provider: ProviderKind): ProviderInstanceId {
+  return providerInstanceId(`${UNRESOLVED_AUTOMATION_INSTANCE_PREFIX}${provider}`);
+}
+
+export function isUnresolvedAutomationInstanceId(instanceId: string | null | undefined): boolean {
+  return (
+    typeof instanceId === "string" && instanceId.startsWith(UNRESOLVED_AUTOMATION_INSTANCE_PREFIX)
+  );
 }
 
 function trimString(value: unknown): string {
@@ -365,6 +376,9 @@ export function deriveProviderInstances(
   const map = deriveProviderInstanceConfigMap(settings);
   const resolved: ResolvedProviderInstance[] = [];
   for (const [instanceId, raw] of Object.entries(map)) {
+    if (isUnresolvedAutomationInstanceId(instanceId)) {
+      continue;
+    }
     if (!isProviderKind(raw.driver)) {
       continue;
     }
@@ -393,6 +407,9 @@ export function deriveUnsupportedProviderInstances(
   const map = deriveProviderInstanceConfigMap(settings);
   const unsupported: UnsupportedProviderInstance[] = [];
   for (const [instanceId, raw] of Object.entries(map)) {
+    if (isUnresolvedAutomationInstanceId(instanceId)) {
+      continue;
+    }
     if (isProviderKind(raw.driver)) {
       continue;
     }
@@ -421,6 +438,9 @@ export function resolveProviderInstance(
     readonly provider?: ProviderKind | undefined;
   },
 ): ResolvedProviderInstance | null {
+  if (isUnresolvedAutomationInstanceId(input.instanceId)) {
+    return null;
+  }
   const instances = deriveProviderInstances(settings);
   if (input.instanceId !== undefined) {
     return (

@@ -26,6 +26,7 @@ import {
 import { Cause, Effect, Layer, Option, PubSub, Queue, Stream } from "effect";
 import {
   inferLegacyProviderKindFromModelSelection,
+  isUnresolvedAutomationInstanceId,
   providerStartOptionsFromInstance,
   type ResolvedProviderInstance,
   resolveModelSelectionInstanceId,
@@ -855,6 +856,18 @@ export const AutomationServiceLive = Layer.effect(
             }),
           );
 
+    const validateResolvedAutomationIdentity = (
+      modelSelection: AutomationDefinition["modelSelection"],
+    ) =>
+      isUnresolvedAutomationInstanceId(modelSelection.instanceId)
+        ? Effect.fail(
+            new AutomationServiceError({
+              message:
+                "Automation uses an unresolved legacy provider account. Select a configured provider account before enabling or running it.",
+            }),
+          )
+        : Effect.void;
+
     const validateRiskAcknowledgements = (input: {
       readonly runtimeMode: AutomationDefinition["runtimeMode"];
       readonly worktreeMode: AutomationDefinition["worktreeMode"];
@@ -1025,6 +1038,8 @@ export const AutomationServiceLive = Layer.effect(
             }),
           );
         }
+
+        yield* validateResolvedAutomationIdentity(definition.modelSelection);
 
         // Enforce the gate at dispatch, not just create/update, so an enabled automation that
         // reached a run unacknowledged (e.g. inserted via the API/DB without consent) cannot run
@@ -2046,6 +2061,7 @@ export const AutomationServiceLive = Layer.effect(
     const create: AutomationServiceShape["create"] = (input) =>
       Effect.gen(function* () {
         const now = isoNow();
+        yield* validateResolvedAutomationIdentity(input.modelSelection);
         yield* requireProject(input.projectId);
         yield* validateSchedulePolicy({
           schedule: input.schedule,
@@ -2091,6 +2107,9 @@ export const AutomationServiceLive = Layer.effect(
         const now = isoNow();
         const current = yield* requireDefinition(input.id);
         const updated = mergeDefinitionUpdate(current, input, now);
+        if (updated.enabled) {
+          yield* validateResolvedAutomationIdentity(updated.modelSelection);
+        }
         yield* requireProject(updated.projectId);
         yield* validateSchedulePolicy({
           schedule: updated.schedule,
@@ -2241,6 +2260,7 @@ export const AutomationServiceLive = Layer.effect(
     const runNow: AutomationServiceShape["runNow"] = (input) =>
       Effect.gen(function* () {
         const definition = yield* requireDefinition(input.automationId);
+        yield* validateResolvedAutomationIdentity(definition.modelSelection);
         const now = isoNow();
         // Heartbeat automations continue a single shared thread, so a manual run must not
         // race a scheduled (or earlier manual) run that is still in flight. Standalone
