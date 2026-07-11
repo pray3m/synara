@@ -1,4 +1,5 @@
 import crypto from "node:crypto";
+import { execSync, spawnSync } from "node:child_process";
 import path from "node:path";
 
 import type {
@@ -54,7 +55,7 @@ import { clampUsagePercent, nonNegativeFiniteNumber, positiveFiniteNumber } from
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "pi" as const;
-const PI_ENV_BACKED_PROVIDER_IDS = new Set<string>([
+const PI_DOWNSTREAM_ENV_BACKED_PROVIDER_IDS = new Set<string>([
   ...MODEL_PROVIDER_API_KEY_ENV_MAPPINGS.map(({ provider }) => provider),
   "amazon-bedrock",
 ]);
@@ -82,6 +83,8 @@ const PI_DEFAULT_SUPPORTED_THINKING_LEVELS = new Set<ThinkingLevel>([
 
 type PiModelRegistry = Pick<ModelRegistry, "find" | "getAll" | "getAvailable">;
 type PiCodingAgentModule = typeof import("@earendil-works/pi-coding-agent");
+type PiModelRegistrySdk = Pick<PiCodingAgentModule, "AuthStorage" | "ModelRegistry"> &
+  Partial<Pick<PiCodingAgentModule, "getShellConfig">>;
 type PiAgentRuntime = Awaited<ReturnType<PiCodingAgentModule["createAgentSessionRuntime"]>>;
 interface PiModelRegistryContext {
   readonly authStorage: AuthStorage;
@@ -791,48 +794,391 @@ export function applyPiRuntimeApiKeysFromEnvironment(
   }
 }
 
-export function isolatePiAuthStorageFromAmbientEnvironment(
-  authStorage: AuthStorage,
-  runtimeOverrideProviders: ReadonlySet<string>,
-): void {
-  const hasStoredCredential = authStorage.has.bind(authStorage);
-  const getApiKey = authStorage.getApiKey.bind(authStorage);
-  const hasAuth = authStorage.hasAuth.bind(authStorage);
-  const getAuthStatus = authStorage.getAuthStatus.bind(authStorage);
+const PI_CONFIG_COMMAND_INHERITED_ENV_KEYS = new Set([
+  "ALL_PROXY",
+  "APPDATA",
+  "COLORTERM",
+  "COMSPEC",
+  "FORCE_COLOR",
+  "HOME",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "LANG",
+  "LOCALAPPDATA",
+  "LOGNAME",
+  "NODE_EXTRA_CA_CERTS",
+  "NO_COLOR",
+  "NO_PROXY",
+  "PATH",
+  "PATHEXT",
+  "PROGRAMDATA",
+  "SHELL",
+  "SSL_CERT_DIR",
+  "SSL_CERT_FILE",
+  "SYSTEMROOT",
+  "TEMP",
+  "TERM",
+  "TMP",
+  "TMPDIR",
+  "USER",
+  "USERPROFILE",
+  "WINDIR",
+]);
 
-  const mayUseOriginalResolution = (provider: string): boolean =>
-    !PI_ENV_BACKED_PROVIDER_IDS.has(provider) ||
-    runtimeOverrideProviders.has(provider) ||
-    hasStoredCredential(provider);
-
-  // Pi resolves runtime overrides and auth.json before process.env. Preserve
-  // those paths (including OAuth refresh), but stop known env-backed providers
-  // before the ambient fallback for an isolated provider instance.
-  authStorage.getApiKey = (provider, options) =>
-    mayUseOriginalResolution(provider) ? getApiKey(provider, options) : Promise.resolve(undefined);
-  authStorage.hasAuth = (provider) =>
-    mayUseOriginalResolution(provider) ? hasAuth(provider) : false;
-  authStorage.getAuthStatus = (provider) =>
-    mayUseOriginalResolution(provider)
-      ? getAuthStatus(provider)
-      : ({ configured: false } as ReturnType<AuthStorage["getAuthStatus"]>);
+interface PiInstanceConfigResolver {
+  readonly selectedValue: (name: string) => string | undefined;
+  readonly resolve: (config: string, cacheCommand?: boolean) => string | undefined;
+  readonly resolveOrThrow: (config: string, description: string) => string;
+  readonly resolveHeadersOrThrow: (
+    headers: Readonly<Record<string, string>> | undefined,
+    description: string,
+  ) => Record<string, string> | undefined;
 }
 
-function piRuntimeApiKeyFingerprint(
+type PiInstanceAuthResolution =
+  | { readonly status: "resolved"; readonly apiKey: string }
+  | { readonly status: "missing" }
+  | { readonly status: "failedStoredAuth" };
+
+interface PiInstanceResolver extends PiInstanceConfigResolver {
+  readonly resolveAuth: (provider: string) => Promise<PiInstanceAuthResolution>;
+}
+
+interface PiShellConfig {
+  readonly shell: string;
+  readonly args: ReadonlyArray<string>;
+}
+
+interface PiAuthStorageInternals {
+  readonly refreshOAuthTokenWithLock?: (
+    provider: string,
+  ) => Promise<{ readonly apiKey: string; readonly newCredentials: unknown } | null>;
+  readonly recordError?: (error: unknown) => void;
+}
+
+interface PiProviderRequestConfig {
+  readonly apiKey?: string;
+  readonly headers?: Readonly<Record<string, string>>;
+  readonly authHeader?: boolean;
+}
+
+interface PiModelRegistryInternals {
+  readonly providerRequestConfigs?: ReadonlyMap<string, PiProviderRequestConfig>;
+  readonly modelRequestHeaders?: ReadonlyMap<string, Readonly<Record<string, string>>>;
+}
+
+function buildPiSelectedEnvironment(
+  environment: Readonly<Record<string, string>>,
+): NodeJS.ProcessEnv {
+  return buildProviderProcessEnv({
+    driver: PROVIDER,
+    env: {},
+    environment,
+  });
+}
+
+function isPiConfigCommandEnvironmentKey(name: string): boolean {
+  const normalizedName = name.toUpperCase();
+  return (
+    PI_CONFIG_COMMAND_INHERITED_ENV_KEYS.has(normalizedName) ||
+    normalizedName.startsWith("LC_") ||
+    normalizedName.startsWith("XDG_")
+  );
+}
+
+function makePiInstanceConfigResolver(
+  selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
+  getShellConfig: (() => PiShellConfig) | undefined,
+): PiInstanceConfigResolver {
+  const inheritedCommandEnvironment = Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => isPiConfigCommandEnvironmentKey(name)),
+  );
+  const commandEnvironment = buildProviderProcessEnv({
+    driver: PROVIDER,
+    env: inheritedCommandEnvironment,
+    environment: Object.fromEntries(
+      Object.entries(selectedEnvironment).filter((entry): entry is [string, string] => {
+        return entry[1] !== undefined;
+      }),
+    ),
+  });
+  const commandResultCache = new Map<string, string | undefined>();
+  const selectedValue = (name: string): string | undefined => {
+    const normalizedName = process.platform === "win32" ? name.toUpperCase() : name;
+    return selectedEnvironment[normalizedName];
+  };
+  const executeWithDefaultShell = (command: string): string | undefined => {
+    try {
+      const output = execSync(command, {
+        encoding: "utf8",
+        env: commandEnvironment,
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 10_000,
+        windowsHide: true,
+      });
+      return output.trim() || undefined;
+    } catch {
+      return undefined;
+    }
+  };
+  const executeCommand = (config: string): string | undefined => {
+    const command = config.slice(1);
+    if (process.platform !== "win32" || !getShellConfig) {
+      return executeWithDefaultShell(command);
+    }
+    try {
+      const { shell, args } = getShellConfig();
+      const result = spawnSync(shell, [...args, command], {
+        encoding: "utf8",
+        env: commandEnvironment,
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 10_000,
+        windowsHide: true,
+      });
+      if (result.error) {
+        return (result.error as NodeJS.ErrnoException).code === "ENOENT"
+          ? executeWithDefaultShell(command)
+          : undefined;
+      }
+      if (result.status !== 0) {
+        return undefined;
+      }
+      return result.stdout.trim() || undefined;
+    } catch {
+      return executeWithDefaultShell(command);
+    }
+  };
+  const resolve = (config: string, cacheCommand = false): string | undefined => {
+    if (!config.startsWith("!")) {
+      return selectedValue(config) || config;
+    }
+    if (!cacheCommand) {
+      return executeCommand(config);
+    }
+    if (!commandResultCache.has(config)) {
+      commandResultCache.set(config, executeCommand(config));
+    }
+    return commandResultCache.get(config);
+  };
+  const resolveOrThrow = (config: string, description: string): string => {
+    const resolved = resolve(config);
+    if (resolved !== undefined) {
+      return resolved;
+    }
+    if (config.startsWith("!")) {
+      throw new Error(`Failed to resolve ${description} from shell command: ${config.slice(1)}`);
+    }
+    throw new Error(`Failed to resolve ${description}`);
+  };
+  const resolveHeadersOrThrow = (
+    headers: Readonly<Record<string, string>> | undefined,
+    description: string,
+  ): Record<string, string> | undefined => {
+    if (!headers) {
+      return undefined;
+    }
+    return Object.fromEntries(
+      Object.entries(headers).map(([name, value]) => [
+        name,
+        resolveOrThrow(value, `${description} header "${name}"`),
+      ]),
+    );
+  };
+  return { selectedValue, resolve, resolveOrThrow, resolveHeadersOrThrow };
+}
+
+export function isolatePiAuthStorageFromAmbientEnvironment(
+  authStorage: AuthStorage,
+  selectedEnvironment: Readonly<NodeJS.ProcessEnv>,
+  getShellConfig?: () => PiShellConfig,
+): PiInstanceResolver {
+  const configResolver = makePiInstanceConfigResolver(selectedEnvironment, getShellConfig);
+  const runtimeOverrides = new Map<string, string>();
+  const setRuntimeApiKey = authStorage.setRuntimeApiKey.bind(authStorage);
+  const removeRuntimeApiKey = authStorage.removeRuntimeApiKey?.bind(authStorage);
+  const hasStoredCredential = authStorage.has.bind(authStorage);
+  const getStoredCredential = authStorage.get.bind(authStorage);
+  const getOAuthProviders = authStorage.getOAuthProviders.bind(authStorage);
+  const internals = authStorage as unknown as PiAuthStorageInternals;
+
+  authStorage.setRuntimeApiKey = (provider, apiKey) => {
+    runtimeOverrides.set(provider, apiKey);
+    setRuntimeApiKey(provider, apiKey);
+  };
+  authStorage.removeRuntimeApiKey = (provider) => {
+    runtimeOverrides.delete(provider);
+    removeRuntimeApiKey?.(provider);
+  };
+  const resolveAuth = async (provider: string): Promise<PiInstanceAuthResolution> => {
+    const runtimeOverride = runtimeOverrides.get(provider);
+    if (runtimeOverride) {
+      return { status: "resolved", apiKey: runtimeOverride };
+    }
+
+    const credential = getStoredCredential(provider);
+    if (credential?.type === "api_key") {
+      const apiKey = configResolver.resolve(credential.key, true);
+      return apiKey ? { status: "resolved", apiKey } : { status: "failedStoredAuth" };
+    }
+    if (credential?.type !== "oauth") {
+      return { status: "missing" };
+    }
+
+    const oauthProvider = getOAuthProviders().find((candidate) => candidate.id === provider);
+    if (!oauthProvider) {
+      return { status: "failedStoredAuth" };
+    }
+    if (Date.now() < credential.expires) {
+      const apiKey = oauthProvider.getApiKey(credential);
+      return apiKey ? { status: "resolved", apiKey } : { status: "failedStoredAuth" };
+    }
+
+    try {
+      const refreshed = await internals.refreshOAuthTokenWithLock?.call(authStorage, provider);
+      // A null refresh is terminal for this isolated lookup. Calling Pi's original
+      // resolver here would continue into the ambient process.env fallback.
+      return refreshed?.apiKey
+        ? { status: "resolved", apiKey: refreshed.apiKey }
+        : { status: "failedStoredAuth" };
+    } catch (error) {
+      internals.recordError?.call(authStorage, error);
+      authStorage.reload();
+      const updatedCredential = getStoredCredential(provider);
+      if (updatedCredential?.type === "oauth" && Date.now() < updatedCredential.expires) {
+        const apiKey = oauthProvider.getApiKey(updatedCredential);
+        return apiKey ? { status: "resolved", apiKey } : { status: "failedStoredAuth" };
+      }
+      return { status: "failedStoredAuth" };
+    }
+  };
+  authStorage.getApiKey = async (provider) => {
+    const resolution = await resolveAuth(provider);
+    return resolution.status === "resolved" ? resolution.apiKey : undefined;
+  };
+  authStorage.hasAuth = (provider) =>
+    runtimeOverrides.has(provider) || hasStoredCredential(provider);
+  authStorage.getAuthStatus = (provider) => {
+    if (hasStoredCredential(provider)) {
+      return { configured: true, source: "stored" };
+    }
+    if (runtimeOverrides.has(provider)) {
+      return { configured: false, source: "runtime", label: "--api-key" };
+    }
+    return { configured: false };
+  };
+
+  return { ...configResolver, resolveAuth };
+}
+
+function isolatePiModelRegistryFromAmbientEnvironment(
+  registry: ModelRegistry,
+  authStorage: AuthStorage,
+  configResolver: PiInstanceResolver,
+): void {
+  const internals = registry as unknown as PiModelRegistryInternals;
+  const providerRequestConfig = (provider: string) =>
+    internals.providerRequestConfigs?.get(provider);
+  const modelRequestHeaders = (provider: string, modelId: string) =>
+    internals.modelRequestHeaders?.get(`${provider}:${modelId}`);
+
+  registry.getApiKeyAndHeaders = async (model) => {
+    try {
+      const providerConfig = providerRequestConfig(model.provider);
+      const authResolution = await configResolver.resolveAuth(model.provider);
+      const storedApiKey = authResolution.status === "resolved" ? authResolution.apiKey : undefined;
+      const apiKey =
+        storedApiKey ??
+        (providerConfig?.apiKey
+          ? configResolver.resolveOrThrow(
+              providerConfig.apiKey,
+              `API key for provider "${model.provider}"`,
+            )
+          : undefined);
+      if (
+        !apiKey &&
+        (authResolution.status === "failedStoredAuth" ||
+          PI_DOWNSTREAM_ENV_BACKED_PROVIDER_IDS.has(model.provider))
+      ) {
+        return { ok: false, error: `No API key found for "${model.provider}"` };
+      }
+      const providerHeaders = configResolver.resolveHeadersOrThrow(
+        providerConfig?.headers,
+        `provider "${model.provider}"`,
+      );
+      const perModelHeaders = configResolver.resolveHeadersOrThrow(
+        modelRequestHeaders(model.provider, model.id),
+        `model "${model.provider}/${model.id}"`,
+      );
+      let headers =
+        model.headers || providerHeaders || perModelHeaders
+          ? { ...model.headers, ...providerHeaders, ...perModelHeaders }
+          : undefined;
+      if (providerConfig?.authHeader) {
+        if (!apiKey) {
+          return { ok: false, error: `No API key found for "${model.provider}"` };
+        }
+        headers = { ...headers, Authorization: `Bearer ${apiKey}` };
+      }
+      return {
+        ok: true,
+        ...(apiKey !== undefined ? { apiKey } : {}),
+        ...(headers && Object.keys(headers).length > 0 ? { headers } : {}),
+      };
+    } catch (error) {
+      return {
+        ok: false,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  };
+  registry.getProviderAuthStatus = (provider) => {
+    const authStatus = authStorage.getAuthStatus(provider);
+    if (authStatus.source) {
+      return authStatus;
+    }
+    const providerApiKey = providerRequestConfig(provider)?.apiKey;
+    if (!providerApiKey) {
+      return authStatus;
+    }
+    if (providerApiKey.startsWith("!")) {
+      return { configured: true, source: "models_json_command" };
+    }
+    if (configResolver.selectedValue(providerApiKey)) {
+      return { configured: true, source: "environment", label: providerApiKey };
+    }
+    return { configured: true, source: "models_json_key" };
+  };
+  registry.getApiKeyForProvider = async (provider) => {
+    const authResolution = await configResolver.resolveAuth(provider);
+    if (authResolution.status === "resolved") {
+      return authResolution.apiKey;
+    }
+    const providerApiKey = providerRequestConfig(provider)?.apiKey;
+    return providerApiKey ? configResolver.resolve(providerApiKey) : undefined;
+  };
+}
+
+function piRuntimeEnvironmentFingerprint(
   environment: Readonly<Record<string, string>> | undefined,
 ): string {
-  const overrides = readPiRuntimeApiKeyOverrides(environment);
-  if (overrides.length === 0) {
-    return "default";
+  if (environment === undefined) {
+    return "ambient";
   }
-  return crypto.createHash("sha256").update(JSON.stringify(overrides)).digest("hex").slice(0, 16);
+  const normalized = Object.entries(buildPiSelectedEnvironment(environment)).toSorted(
+    ([left], [right]) => left.localeCompare(right),
+  );
+  return `isolated:${crypto
+    .createHash("sha256")
+    .update(JSON.stringify(normalized))
+    .digest("hex")
+    .slice(0, 16)}`;
 }
 
 // Keep discovery registries isolated so extension provider registrations reflect
 // the current agent dir + project cwd instead of stale state from prior listings.
 export function createPiModelRegistry(
   agentDir: string,
-  piSdk: Pick<PiCodingAgentModule, "AuthStorage" | "ModelRegistry">,
+  piSdk: PiModelRegistrySdk,
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
 ): PiModelRegistryContext {
@@ -842,22 +1188,24 @@ export function createPiModelRegistry(
   const hasAccountBoundary =
     environment !== undefined || (instanceId !== undefined && instanceId !== PROVIDER);
   const runtimeEnvironment = hasAccountBoundary
-    ? buildProviderProcessEnv({
-        driver: PROVIDER,
-        ...(instanceId !== undefined ? { instanceId } : {}),
-        ...(environment !== undefined ? { environment } : {}),
-      })
+    ? buildPiSelectedEnvironment(environment ?? {})
     : environment;
+  let configResolver: PiInstanceResolver | undefined;
   if (hasAccountBoundary) {
-    isolatePiAuthStorageFromAmbientEnvironment(
+    configResolver = isolatePiAuthStorageFromAmbientEnvironment(
       authStorage,
-      new Set(readPiRuntimeApiKeyOverrides(runtimeEnvironment).map(([provider]) => provider)),
+      runtimeEnvironment ?? {},
+      piSdk.getShellConfig,
     );
   }
   applyPiRuntimeApiKeysFromEnvironment(authStorage, runtimeEnvironment);
+  const registry = piSdk.ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
+  if (configResolver) {
+    isolatePiModelRegistryFromAmbientEnvironment(registry, authStorage, configResolver);
+  }
   return {
     authStorage,
-    registry: piSdk.ModelRegistry.create(authStorage, path.join(agentDir, "models.json")),
+    registry,
   };
 }
 
@@ -975,9 +1323,9 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       agentDir: string,
       environment: Readonly<Record<string, string>> | undefined,
       instanceId: string | undefined,
-      piSdk: Pick<PiCodingAgentModule, "AuthStorage" | "ModelRegistry">,
+      piSdk: PiModelRegistrySdk,
     ): Promise<PiModelRegistryContext> => {
-      const cacheKey = `${agentDir}:${instanceId ?? PROVIDER}:${piRuntimeApiKeyFingerprint(environment)}`;
+      const cacheKey = `${agentDir}:${instanceId ?? PROVIDER}:${piRuntimeEnvironmentFingerprint(environment)}`;
       const existing = modelRegistryContexts.get(cacheKey);
       if (existing) return existing;
       const context = createPiModelRegistry(agentDir, piSdk, environment, instanceId);

@@ -72,12 +72,17 @@ describe("getPiSupportedThinkingOptions", () => {
 
 describe("applyPiRuntimeApiKeysFromEnvironment", () => {
   it("uses the same runtime auth storage for API keys and model registry", () => {
+    const setRuntimeApiKey = vi.fn();
     const authStorage = {
-      setRuntimeApiKey: vi.fn(),
+      setRuntimeApiKey,
+      removeRuntimeApiKey: vi.fn(),
+      get: vi.fn(() => undefined),
       has: vi.fn(() => false),
       getApiKey: vi.fn(async () => undefined),
       hasAuth: vi.fn(() => false),
       getAuthStatus: vi.fn(() => ({ configured: false })),
+      getOAuthProviders: vi.fn(() => []),
+      reload: vi.fn(),
     } as unknown as AuthStorage;
     const registry = {} as ModelRegistry;
     const piSdk = {
@@ -94,7 +99,7 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
     });
 
     expect(piSdk.AuthStorage.create).toHaveBeenCalledWith("/agent/auth.json");
-    expect(authStorage.setRuntimeApiKey).toHaveBeenCalledWith("openai", "instance-openai-key");
+    expect(setRuntimeApiKey).toHaveBeenCalledWith("openai", "instance-openai-key");
     expect(piSdk.ModelRegistry.create).toHaveBeenCalledWith(authStorage, "/agent/models.json");
     expect(context.authStorage).toBe(authStorage);
     expect(context.registry).toBe(registry);
@@ -137,8 +142,11 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
   it("blocks ambient API-key fallback for a non-default Pi instance registry", async () => {
     const previousOpenAiKey = process.env.OPENAI_API_KEY;
     process.env.OPENAI_API_KEY = "ambient-account-a";
+    const setRuntimeApiKey = vi.fn();
     const authStorage = {
-      setRuntimeApiKey: vi.fn(),
+      setRuntimeApiKey,
+      removeRuntimeApiKey: vi.fn(),
+      get: vi.fn(() => undefined),
       has: vi.fn(() => false),
       getApiKey: vi.fn(async () => process.env.OPENAI_API_KEY),
       hasAuth: vi.fn(() => process.env.OPENAI_API_KEY !== undefined),
@@ -147,6 +155,8 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
         source: "environment" as const,
         label: "OPENAI_API_KEY",
       })),
+      getOAuthProviders: vi.fn(() => []),
+      reload: vi.fn(),
     } as unknown as AuthStorage;
     const piSdk = {
       AuthStorage: {
@@ -163,6 +173,15 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
       expect(await context.authStorage.getApiKey("openai")).toBeUndefined();
       expect(context.authStorage.hasAuth("openai")).toBe(false);
       expect(context.authStorage.getAuthStatus("openai")).toEqual({ configured: false });
+      await expect(
+        context.registry.getApiKeyAndHeaders({
+          provider: "openai",
+          id: "gpt-isolated",
+        } as unknown as Model<Api>),
+      ).resolves.toEqual({
+        ok: false,
+        error: 'No API key found for "openai"',
+      });
     } finally {
       if (previousOpenAiKey === undefined) {
         delete process.env.OPENAI_API_KEY;
@@ -171,12 +190,18 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
       }
     }
 
-    expect(authStorage.setRuntimeApiKey).not.toHaveBeenCalled();
+    expect(setRuntimeApiKey).not.toHaveBeenCalled();
   });
 
   it("preserves instance auth.json resolution while blocking ambient fallback", async () => {
     const authStorage = {
       setRuntimeApiKey: vi.fn(),
+      removeRuntimeApiKey: vi.fn(),
+      get: vi.fn((provider: string) =>
+        provider === "openai"
+          ? { type: "api_key" as const, key: "stored-instance-key" }
+          : undefined,
+      ),
       has: vi.fn((provider: string) => provider === "openai"),
       getApiKey: vi.fn(async (provider: string) =>
         provider === "openai" ? "stored-instance-key" : undefined,
@@ -187,6 +212,8 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
           ? { configured: true, source: "stored" as const }
           : { configured: false },
       ),
+      getOAuthProviders: vi.fn(() => []),
+      reload: vi.fn(),
     } as unknown as AuthStorage;
     const piSdk = {
       AuthStorage: {
@@ -205,6 +232,311 @@ describe("applyPiRuntimeApiKeysFromEnvironment", () => {
       configured: true,
       source: "stored",
     });
+  });
+
+  it("does not fall through to an ambient key after an expired OAuth refresh returns null", async () => {
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "ambient-account-a";
+    const expiredCredential = {
+      type: "oauth" as const,
+      refresh: "expired-refresh-token",
+      access: "expired-access-token",
+      expires: Date.now() - 1_000,
+    };
+    const originalGetApiKey = vi.fn(async () => process.env.OPENAI_API_KEY);
+    const refreshOAuthTokenWithLock = vi.fn(async () => null);
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+      removeRuntimeApiKey: vi.fn(),
+      get: vi.fn((provider: string) => (provider === "openai" ? expiredCredential : undefined)),
+      has: vi.fn((provider: string) => provider === "openai"),
+      getApiKey: originalGetApiKey,
+      hasAuth: vi.fn(() => true),
+      getAuthStatus: vi.fn(() => ({ configured: true, source: "stored" as const })),
+      getOAuthProviders: vi.fn(() => [
+        {
+          id: "openai",
+          name: "OpenAI",
+          getApiKey: (credential: typeof expiredCredential) => credential.access,
+        },
+      ]),
+      reload: vi.fn(),
+      refreshOAuthTokenWithLock,
+    } as unknown as AuthStorage;
+    const piSdk = {
+      AuthStorage: {
+        create: vi.fn(() => authStorage),
+      },
+      ModelRegistry: {
+        create: vi.fn(() => ({}) as ModelRegistry),
+      },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+
+    try {
+      const context = createPiModelRegistry("/agent", piSdk, undefined, "pi_work");
+
+      await expect(context.authStorage.getApiKey("openai")).resolves.toBeUndefined();
+      await expect(
+        context.registry.getApiKeyAndHeaders({
+          provider: "openai",
+          id: "gpt-isolated",
+        } as unknown as Model<Api>),
+      ).resolves.toEqual({
+        ok: false,
+        error: 'No API key found for "openai"',
+      });
+      expect(refreshOAuthTokenWithLock).toHaveBeenCalledWith("openai");
+      expect(originalGetApiKey).not.toHaveBeenCalled();
+    } finally {
+      if (previousOpenAiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiKey;
+      }
+    }
+  });
+
+  it("preserves a successful locked OAuth refresh for an isolated instance", async () => {
+    const previousOpenAiKey = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "ambient-account-a";
+    let storedCredential = {
+      type: "oauth" as const,
+      refresh: "expired-refresh-token",
+      access: "expired-access-token",
+      expires: Date.now() - 1_000,
+    };
+    const originalGetApiKey = vi.fn(async () => process.env.OPENAI_API_KEY);
+    const refreshOAuthTokenWithLock = vi.fn(async () => {
+      storedCredential = {
+        type: "oauth",
+        refresh: "new-refresh-token",
+        access: "refreshed-instance-key",
+        expires: Date.now() + 60_000,
+      };
+      return {
+        apiKey: "refreshed-instance-key",
+        newCredentials: storedCredential,
+      };
+    });
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+      removeRuntimeApiKey: vi.fn(),
+      get: vi.fn((provider: string) => (provider === "openai" ? storedCredential : undefined)),
+      has: vi.fn((provider: string) => provider === "openai"),
+      getApiKey: originalGetApiKey,
+      hasAuth: vi.fn(() => true),
+      getAuthStatus: vi.fn(() => ({ configured: true, source: "stored" as const })),
+      getOAuthProviders: vi.fn(() => [
+        {
+          id: "openai",
+          name: "OpenAI",
+          getApiKey: (credential: typeof storedCredential) => credential.access,
+        },
+      ]),
+      reload: vi.fn(),
+      refreshOAuthTokenWithLock,
+    } as unknown as AuthStorage;
+    const piSdk = {
+      AuthStorage: {
+        create: vi.fn(() => authStorage),
+      },
+      ModelRegistry: {
+        create: vi.fn(() => ({}) as ModelRegistry),
+      },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+
+    try {
+      const context = createPiModelRegistry("/agent", piSdk, undefined, "pi_work");
+
+      await expect(context.authStorage.getApiKey("openai")).resolves.toBe("refreshed-instance-key");
+      await expect(
+        context.registry.getApiKeyAndHeaders({
+          provider: "openai",
+          id: "gpt-isolated",
+        } as unknown as Model<Api>),
+      ).resolves.toEqual({
+        ok: true,
+        apiKey: "refreshed-instance-key",
+      });
+      expect(refreshOAuthTokenWithLock).toHaveBeenCalledTimes(1);
+      expect(originalGetApiKey).not.toHaveBeenCalled();
+    } finally {
+      if (previousOpenAiKey === undefined) {
+        delete process.env.OPENAI_API_KEY;
+      } else {
+        process.env.OPENAI_API_KEY = previousOpenAiKey;
+      }
+    }
+  });
+
+  it("resolves custom provider config from the selected environment, literals, and commands", async () => {
+    const previousCustomKey = process.env.CUSTOM_KEY;
+    const previousCustomHeader = process.env.CUSTOM_HEADER;
+    const previousCustomModelHeader = process.env.CUSTOM_MODEL_HEADER;
+    process.env.CUSTOM_KEY = "ambient-account-a";
+    process.env.CUSTOM_HEADER = "ambient-header-a";
+    process.env.CUSTOM_MODEL_HEADER = "ambient-model-header-a";
+    const originalGetApiKey = vi.fn(async () => process.env.CUSTOM_KEY);
+    const authStorage = {
+      setRuntimeApiKey: vi.fn(),
+      removeRuntimeApiKey: vi.fn(),
+      get: vi.fn(() => undefined),
+      has: vi.fn(() => false),
+      getApiKey: originalGetApiKey,
+      hasAuth: vi.fn(() => false),
+      getAuthStatus: vi.fn(() => ({ configured: false })),
+      getOAuthProviders: vi.fn(() => []),
+      reload: vi.fn(),
+    } as unknown as AuthStorage;
+    const ambientBackedRegistryApiKey = vi.fn(async () => process.env.CUSTOM_KEY);
+    const ambientBackedRequestAuth = vi.fn(async () => ({
+      ok: true as const,
+      apiKey: process.env.CUSTOM_KEY,
+    }));
+    const commandConfig = `!${JSON.stringify(process.execPath)} -p ${JSON.stringify(
+      "process.env.CUSTOM_KEY",
+    )}`;
+    const registry = {
+      providerRequestConfigs: new Map([
+        ["custom", { apiKey: "CUSTOM_KEY", headers: { "X-Custom": "CUSTOM_HEADER" } }],
+        ["custom-literal", { apiKey: "literal-api-key" }],
+        ["custom-command", { apiKey: commandConfig }],
+      ]),
+      modelRequestHeaders: new Map<string, Record<string, string>>([
+        ["custom:custom-model", { "X-Per-Model": "CUSTOM_MODEL_HEADER" }],
+      ]),
+      getApiKeyForProvider: ambientBackedRegistryApiKey,
+      getApiKeyAndHeaders: ambientBackedRequestAuth,
+      getProviderAuthStatus: vi.fn(() => ({
+        configured: true,
+        source: "environment" as const,
+        label: "CUSTOM_KEY",
+      })),
+    } as unknown as ModelRegistry;
+    const piSdk = {
+      AuthStorage: {
+        create: vi.fn(() => authStorage),
+      },
+      ModelRegistry: {
+        create: vi.fn(() => registry),
+      },
+    } as unknown as Parameters<typeof createPiModelRegistry>[1];
+
+    try {
+      const context = createPiModelRegistry(
+        "/agent",
+        piSdk,
+        {
+          CUSTOM_KEY: "selected-account-b",
+          CUSTOM_HEADER: "selected-header-b",
+          CUSTOM_MODEL_HEADER: "selected-model-header-b",
+        },
+        "pi_work",
+      );
+
+      await expect(context.registry.getApiKeyForProvider("custom")).resolves.toBe(
+        "selected-account-b",
+      );
+      await expect(context.registry.getApiKeyForProvider("custom-literal")).resolves.toBe(
+        "literal-api-key",
+      );
+      await expect(context.registry.getApiKeyForProvider("custom-command")).resolves.toBe(
+        "selected-account-b",
+      );
+      await expect(
+        context.registry.getApiKeyAndHeaders({
+          provider: "custom",
+          id: "custom-model",
+          headers: { "X-Model": "model-header" },
+        } as unknown as Model<Api>),
+      ).resolves.toEqual({
+        ok: true,
+        apiKey: "selected-account-b",
+        headers: {
+          "X-Custom": "selected-header-b",
+          "X-Model": "model-header",
+          "X-Per-Model": "selected-model-header-b",
+        },
+      });
+      expect(context.registry.getProviderAuthStatus("custom")).toEqual({
+        configured: true,
+        source: "environment",
+        label: "CUSTOM_KEY",
+      });
+      expect(originalGetApiKey).not.toHaveBeenCalled();
+      expect(ambientBackedRegistryApiKey).not.toHaveBeenCalled();
+      expect(ambientBackedRequestAuth).not.toHaveBeenCalled();
+    } finally {
+      if (previousCustomKey === undefined) {
+        delete process.env.CUSTOM_KEY;
+      } else {
+        process.env.CUSTOM_KEY = previousCustomKey;
+      }
+      if (previousCustomHeader === undefined) {
+        delete process.env.CUSTOM_HEADER;
+      } else {
+        process.env.CUSTOM_HEADER = previousCustomHeader;
+      }
+      if (previousCustomModelHeader === undefined) {
+        delete process.env.CUSTOM_MODEL_HEADER;
+      } else {
+        process.env.CUSTOM_MODEL_HEADER = previousCustomModelHeader;
+      }
+    }
+  });
+
+  it("keeps identical auth.json commands cached inside their immutable instance environments", async () => {
+    const previousCustomKey = process.env.CUSTOM_KEY;
+    process.env.CUSTOM_KEY = "ambient-account";
+    const commandConfig = `!${JSON.stringify(process.execPath)} -p ${JSON.stringify(
+      "process.env.CUSTOM_KEY",
+    )}`;
+    const createContext = (environment: Record<string, string>, instanceId: string) => {
+      const authStorage = {
+        setRuntimeApiKey: vi.fn(),
+        removeRuntimeApiKey: vi.fn(),
+        get: vi.fn((provider: string) =>
+          provider === "custom-command"
+            ? { type: "api_key" as const, key: commandConfig }
+            : undefined,
+        ),
+        has: vi.fn((provider: string) => provider === "custom-command"),
+        getApiKey: vi.fn(async () => process.env.CUSTOM_KEY),
+        hasAuth: vi.fn(() => true),
+        getAuthStatus: vi.fn(() => ({ configured: true, source: "stored" as const })),
+        getOAuthProviders: vi.fn(() => []),
+        reload: vi.fn(),
+      } as unknown as AuthStorage;
+      const piSdk = {
+        AuthStorage: {
+          create: vi.fn(() => authStorage),
+        },
+        ModelRegistry: {
+          create: vi.fn(() => ({}) as ModelRegistry),
+        },
+      } as unknown as Parameters<typeof createPiModelRegistry>[1];
+      return createPiModelRegistry("/agent", piSdk, environment, instanceId);
+    };
+
+    try {
+      const accountAEnvironment = { CUSTOM_KEY: "selected-account-a" };
+      const accountA = createContext(accountAEnvironment, "pi_account_a");
+      accountAEnvironment.CUSTOM_KEY = "mutated-after-snapshot";
+      const accountB = createContext({ CUSTOM_KEY: "selected-account-b" }, "pi_account_b");
+
+      await expect(
+        Promise.all([
+          accountA.authStorage.getApiKey("custom-command"),
+          accountB.authStorage.getApiKey("custom-command"),
+        ]),
+      ).resolves.toEqual(["selected-account-a", "selected-account-b"]);
+    } finally {
+      if (previousCustomKey === undefined) {
+        delete process.env.CUSTOM_KEY;
+      } else {
+        process.env.CUSTOM_KEY = previousCustomKey;
+      }
+    }
   });
 
   it("preserves ambient fallback for the default Pi instance", async () => {

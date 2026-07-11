@@ -333,7 +333,7 @@ function pooledOpenCodeServerKey(input: {
 function environmentFingerprint(
   environment: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> | null {
-  if (!environment || Object.keys(environment).length === 0) {
+  if (environment === undefined) {
     return null;
   }
   return Object.fromEntries(

@@ -196,7 +196,7 @@ function hashDiscoveryEnvelopeValue(value: string): string {
 function normalizeDiscoveryEnvironment(
   environment: Readonly<Record<string, string>> | undefined,
 ): Record<string, string> | undefined {
-  if (!environment) {
+  if (environment === undefined) {
     return undefined;
   }
   const normalized = Object.fromEntries(
@@ -206,7 +206,7 @@ function normalizeDiscoveryEnvironment(
       .toSorted(([left], [right]) => left.localeCompare(right))
       .map(([name, value]) => [name, hashDiscoveryEnvelopeValue(value)]),
   );
-  return Object.keys(normalized).length > 0 ? normalized : undefined;
+  return normalized;
 }
 
 function toRequestError(
