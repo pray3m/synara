@@ -10,12 +10,15 @@ import {
   lstatSync,
   linkSync,
   mkdirSync,
+  realpathSync,
   readdirSync,
   readFileSync,
   readlinkSync,
   renameSync,
   rmSync,
+  statSync,
   symlinkSync,
+  type BigIntStats,
   writeFileSync,
 } from "node:fs";
 import { createHash, randomUUID } from "node:crypto";
@@ -173,6 +176,20 @@ export interface CodexAuthTracking {
   readonly effectiveAuthFilePath?: string;
 }
 
+export type CodexPreparedAuthSource =
+  | { readonly kind: "missing" }
+  | {
+      readonly kind: "bound";
+      readonly canonicalHomePath: string;
+      readonly device: bigint;
+      readonly inode: bigint;
+    };
+
+export interface PreparedCodexAuthTracking extends CodexAuthTracking {
+  /** The exact directory identity auxiliary generation is allowed to read. */
+  readonly authSource: CodexPreparedAuthSource;
+}
+
 export interface CodexProcessLaunchContext {
   readonly env: NodeJS.ProcessEnv;
   readonly authTracking: CodexAuthTracking;
@@ -209,6 +226,37 @@ export interface CodexProcessEnvInput {
   readonly expectedSharedContinuationGeneration?: string;
   /** Validation-only v1 -> v2 migration used while upgrading persisted bindings. */
   readonly allowLegacySharedContinuationMigration?: boolean;
+}
+
+export function hydrateCodexProviderCredentialEnvironment(input: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly credentialEnvNames: ReadonlyArray<string>;
+  readonly trustedEnv?: NodeJS.ProcessEnv;
+  readonly platform?: NodeJS.Platform;
+  readonly readEnvironment?: ShellEnvironmentReader;
+}): NodeJS.ProcessEnv {
+  const env = { ...input.env };
+  const missingNames = [...new Set(input.credentialEnvNames)].filter((name) => !env[name]?.trim());
+  const platform = input.platform ?? process.platform;
+  if (missingNames.length === 0 || (platform !== "darwin" && platform !== "linux")) {
+    return env;
+  }
+
+  try {
+    const shell = resolveLoginShell(platform, (input.trustedEnv ?? process.env).SHELL);
+    if (!shell) return env;
+    const shellEnvironment = (input.readEnvironment ?? readEnvironmentFromLoginShell)(
+      shell,
+      missingNames,
+    );
+    for (const name of missingNames) {
+      const value = shellEnvironment[name];
+      if (value?.trim()) env[name] = value;
+    }
+  } catch {
+    // Login-shell probing is best effort; inherited provider credentials stay authoritative.
+  }
+  return env;
 }
 
 interface CodexOverlayResolution {
@@ -1018,21 +1066,15 @@ function uniqueResolvedPaths(paths: readonly string[]): string[] {
   return result;
 }
 
-export function resolveCodexAuthTracking(
-  input: Pick<CodexProcessEnvInput, "env" | "homePath" | "shadowHomePath" | "accountId"> = {},
+function resolveCodexAuthTrackingFromResolution(
+  resolution: CodexOverlayResolution,
+  accountId?: string,
 ): CodexAuthTracking {
-  const env = { ...(input.env ?? process.env) };
-  const resolution = resolveCodexOverlayResolution({
-    env,
-    ...(input.homePath ? { homePath: input.homePath } : {}),
-    ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
-    ...(input.accountId ? { accountId: input.accountId } : {}),
-  });
   const sourceConfigPath = path.join(resolution.sourceHomePath, "config.toml");
   const sourceConfig = existsSync(sourceConfigPath) ? readFileSync(sourceConfigPath, "utf8") : "";
   assertManagedCodexHomeUsesObservableAuth({
     sourceConfig,
-    ...(input.accountId ? { accountId: input.accountId } : {}),
+    ...(accountId ? { accountId } : {}),
   });
 
   const authoritativeAuthHomePath =
@@ -1050,6 +1092,19 @@ export function resolveCodexAuthTracking(
     authoritativeAuthFilePath,
     ...(effectiveAuthFilePath ? { effectiveAuthFilePath } : {}),
   };
+}
+
+export function resolveCodexAuthTracking(
+  input: Pick<CodexProcessEnvInput, "env" | "homePath" | "shadowHomePath" | "accountId"> = {},
+): CodexAuthTracking {
+  const env = { ...(input.env ?? process.env) };
+  const resolution = resolveCodexOverlayResolution({
+    env,
+    ...(input.homePath ? { homePath: input.homePath } : {}),
+    ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
+    ...(input.accountId ? { accountId: input.accountId } : {}),
+  });
+  return resolveCodexAuthTrackingFromResolution(resolution, input.accountId);
 }
 
 function readFileFingerprint(filePath: string): string {
@@ -1443,24 +1498,31 @@ function removeStaleMirroredAuthWhenSourceIsMissing(resolution: CodexOverlayReso
   rmSync(markerPath, { force: true });
 }
 
-// A symlinked shadow home (or one resolving to the source home) aliases
-// another account's credentials through the directory itself, so account
-// overlays must reject that configuration.
-function validateCodexShadowHomePath(sourceHomePath: string, shadowHomePath: string): void {
-  if (codexPathsReferenceSameLocation(sourceHomePath, shadowHomePath)) {
-    throw new Error("Codex account shadow home must be different from CODEX_HOME.");
+// A symlinked private home (or one resolving to the source home) aliases
+// another account's credentials through the directory itself.
+function validateCodexPrivateHomePath(
+  sourceHomePath: string,
+  privateHomePath: string,
+  label: "shadow home" | "overlay home",
+): void {
+  if (codexPathsReferenceSameLocation(sourceHomePath, privateHomePath)) {
+    throw new Error(`Codex account ${label} must be different from CODEX_HOME.`);
   }
-  let shadowStat: ReturnType<typeof lstatSync> | undefined;
+  let privateHomeStat: ReturnType<typeof lstatSync> | undefined;
   try {
-    shadowStat = lstatSync(shadowHomePath);
+    privateHomeStat = lstatSync(privateHomePath);
   } catch {
-    shadowStat = undefined;
+    privateHomeStat = undefined;
   }
-  if (shadowStat?.isSymbolicLink()) {
+  if (privateHomeStat?.isSymbolicLink()) {
     throw new Error(
-      `Codex account shadow home at ${shadowHomePath} is a symlink; it must be a real directory so accounts cannot alias each other's auth.`,
+      `Codex account ${label} at ${privateHomePath} is a symlink; it must be a real directory so accounts cannot alias each other's auth.`,
     );
   }
+}
+
+function validateCodexShadowHomePath(sourceHomePath: string, shadowHomePath: string): void {
+  validateCodexPrivateHomePath(sourceHomePath, shadowHomePath, "shadow home");
 }
 
 // A symlinked auth.json can silently alias another account's credentials, so
@@ -1485,6 +1547,67 @@ function lstatShadowPrivateState(
     );
   }
   return sourceStat;
+}
+
+function filesystemErrorCode(cause: unknown): string | undefined {
+  return typeof cause === "object" && cause !== null && "code" in cause
+    ? String((cause as { readonly code?: unknown }).code ?? "")
+    : undefined;
+}
+
+function bindCodexPreparedAuthSource(
+  authoritativeAuthHomePath: string,
+  requireRealDirectory: boolean,
+): CodexPreparedAuthSource {
+  let initialLogicalStat: BigIntStats;
+  try {
+    initialLogicalStat = lstatSync(authoritativeAuthHomePath, { bigint: true });
+  } catch (cause) {
+    if (filesystemErrorCode(cause) === "ENOENT") return { kind: "missing" };
+    throw cause;
+  }
+
+  if (requireRealDirectory && initialLogicalStat.isSymbolicLink()) {
+    throw new Error(
+      `Codex account auth home at ${authoritativeAuthHomePath} is a symlink; it must remain bound to one account directory.`,
+    );
+  }
+  if (!initialLogicalStat.isDirectory() && !initialLogicalStat.isSymbolicLink()) {
+    throw new Error(`Codex account auth home at ${authoritativeAuthHomePath} is not a directory.`);
+  }
+
+  try {
+    const canonicalHomePath = realpathSync(authoritativeAuthHomePath);
+    const canonicalStat = lstatSync(canonicalHomePath, { bigint: true });
+    const finalLogicalStat = lstatSync(authoritativeAuthHomePath, { bigint: true });
+    const finalTargetStat = statSync(authoritativeAuthHomePath, { bigint: true });
+    const logicalEntryIsStable =
+      initialLogicalStat.dev === finalLogicalStat.dev &&
+      initialLogicalStat.ino === finalLogicalStat.ino &&
+      initialLogicalStat.mode === finalLogicalStat.mode;
+    const canonicalDirectoryIsStable =
+      canonicalStat.isDirectory() &&
+      !canonicalStat.isSymbolicLink() &&
+      canonicalStat.dev === finalTargetStat.dev &&
+      canonicalStat.ino === finalTargetStat.ino;
+    if (!logicalEntryIsStable || !canonicalDirectoryIsStable) {
+      throw new Error(
+        `Codex account auth home at ${authoritativeAuthHomePath} changed while its identity was being bound; retry the request.`,
+      );
+    }
+    return {
+      kind: "bound",
+      canonicalHomePath,
+      device: canonicalStat.dev,
+      inode: canonicalStat.ino,
+    };
+  } catch (cause) {
+    if (cause instanceof Error && /changed while its identity/.test(cause.message)) throw cause;
+    throw new Error(
+      `Codex account auth home at ${authoritativeAuthHomePath} could not be bound safely.`,
+      { cause },
+    );
+  }
 }
 
 function prepareSynaraCodexHomeOverlay(input: {
@@ -1708,6 +1831,51 @@ function dropStaleAccountPrivateStateSymlinks(accountHomePath: string): void {
       // Missing private state is created lazily by the account's own login.
     }
   }
+}
+
+/**
+ * Resolves the authoritative account auth file without preparing Codex
+ * continuation storage. Auxiliary text generation uses this path because it
+ * needs account credentials and provider routing, but must not create session
+ * directories, SQLite state, or continuation-generation markers.
+ */
+export function prepareCodexAuthTracking(
+  input: Pick<CodexProcessEnvInput, "env" | "homePath" | "shadowHomePath" | "accountId"> = {},
+): PreparedCodexAuthTracking {
+  const env = { ...(input.env ?? process.env) };
+  const resolution = resolveCodexOverlayResolution({
+    env,
+    ...(input.homePath ? { homePath: input.homePath } : {}),
+    ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
+    ...(input.accountId ? { accountId: input.accountId } : {}),
+  });
+  if (resolution.shadowHomePath) {
+    validateCodexShadowHomePath(resolution.sourceHomePath, resolution.shadowHomePath);
+    lstatShadowPrivateState(resolution.shadowHomePath, "auth.json");
+  }
+  if (
+    resolution.accountSegment &&
+    !resolution.shadowHomePath &&
+    !resolution.hasDedicatedAccountHome
+  ) {
+    validateCodexPrivateHomePath(
+      resolution.sourceHomePath,
+      resolution.overlayHomePath,
+      "overlay home",
+    );
+    lstatShadowPrivateState(resolution.overlayHomePath, "auth.json");
+  }
+  const tracking = resolveCodexAuthTrackingFromResolution(resolution, input.accountId);
+  const requiresRealPrivateHome = Boolean(
+    resolution.shadowHomePath || (resolution.accountSegment && !resolution.hasDedicatedAccountHome),
+  );
+  return {
+    ...tracking,
+    authSource: bindCodexPreparedAuthSource(
+      path.dirname(tracking.authoritativeAuthFilePath),
+      requiresRealPrivateHome,
+    ),
+  };
 }
 
 export function buildCodexProcessLaunchContext(

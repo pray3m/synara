@@ -23,7 +23,11 @@ import { DEFAULT_GIT_TEXT_GENERATION_MODEL } from "@synara/contracts";
 import { sanitizeGeneratedThreadTitle } from "@synara/shared/chatThreads";
 import { sanitizeBranchFragment, sanitizeFeatureBranchName } from "@synara/shared/git";
 
-import { buildCodexProcessLaunchContext } from "../../codexProcessEnv.ts";
+import {
+  hydrateCodexProviderCredentialEnvironment,
+  prepareCodexAuthTracking,
+  type CodexPreparedAuthSource,
+} from "../../codexProcessEnv.ts";
 import { compareCodexCliVersions, parseCodexCliVersion } from "../../provider/codexCliVersion.ts";
 import { TextGenerationError } from "../Errors.ts";
 import {
@@ -394,7 +398,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
   const prepareIsolatedCodexHome = (
     operation: TextGenerationOperation,
     config: CodexTextGenerationConfig,
-    authoritativeAuthFilePath: string,
+    authSource: CodexPreparedAuthSource,
     selectedModel: string,
   ): Effect.Effect<
     {
@@ -452,7 +456,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
 
       yield* Effect.try({
         try: () =>
-          prepareCodexTextGenerationAuthSnapshot(authoritativeAuthFilePath, homePath, {
+          prepareCodexTextGenerationAuthSnapshot(authSource, homePath, {
             minimumValidityMs: minimumCodexAuthValidityMs(timing),
           }),
         catch: (cause) =>
@@ -539,12 +543,14 @@ const makeCodexTextGeneration = Effect.gen(function* () {
         const resolvedCodexHomePath = resolveCodexHomePath(codexHomePath, providerOptions);
         const resolvedCodexAuthHomePath = resolveCodexAuthHomePath(providerOptions);
         const resolvedCodexAccountId = resolveCodexAccountId(providerOptions);
-        const instanceLaunchEnv = providerOptions?.codex?.environment
-          ? { ...process.env, ...providerOptions.codex.environment }
-          : process.env;
-        const processLaunch = yield* Effect.try({
+        const trustedProcessEnv = { ...process.env };
+        const instanceLaunchEnv = {
+          ...trustedProcessEnv,
+          ...providerOptions?.codex?.environment,
+        };
+        const authTracking = yield* Effect.try({
           try: () =>
-            buildCodexProcessLaunchContext({
+            prepareCodexAuthTracking({
               env: instanceLaunchEnv,
               ...(resolvedCodexHomePath ? { homePath: resolvedCodexHomePath } : {}),
               ...(resolvedCodexAuthHomePath ? { shadowHomePath: resolvedCodexAuthHomePath } : {}),
@@ -562,8 +568,13 @@ const makeCodexTextGeneration = Effect.gen(function* () {
         });
         const isolatedConfig = yield* readSourceCodexConfig(
           operation,
-          processLaunch.authTracking.sourceConfigPath,
+          authTracking.sourceConfigPath,
         );
+        const hydratedLaunchEnv = hydrateCodexProviderCredentialEnvironment({
+          env: instanceLaunchEnv,
+          credentialEnvNames: isolatedConfig.providerEnvKeys,
+          trustedEnv: trustedProcessEnv,
+        });
         const schemaPath = yield* acquireSecureTempFile({
           directory: tempDir(),
           prefix: "synara-codex-schema-",
@@ -597,7 +608,7 @@ const makeCodexTextGeneration = Effect.gen(function* () {
         const isolatedCodexHome = yield* prepareIsolatedCodexHome(
           operation,
           isolatedConfig,
-          processLaunch.authTracking.authoritativeAuthFilePath,
+          authTracking.authSource,
           selectedModel,
         );
 
@@ -608,8 +619,8 @@ const makeCodexTextGeneration = Effect.gen(function* () {
           const env = yield* Effect.try({
             try: () =>
               buildCodexTextGenerationChildEnv({
-                sourceEnv: processLaunch.env,
-                trustedPlatformEnv: process.env,
+                sourceEnv: hydratedLaunchEnv,
+                trustedPlatformEnv: trustedProcessEnv,
                 isolatedHomePath: isolatedCodexHome.homePath,
                 isolatedTempPath: isolatedCodexHome.tempDirectoryPath,
                 providerEnvKeys: isolatedConfig.providerEnvKeys,
