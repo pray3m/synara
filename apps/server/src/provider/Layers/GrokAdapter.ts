@@ -90,10 +90,12 @@ import {
   type GrokAcpRuntimeSettings,
 } from "../acp/GrokAcpSupport.ts";
 import { GrokAdapter, type GrokAdapterShape } from "../Services/GrokAdapter.ts";
+import { resolveProviderSessionInstanceId } from "../Services/ProviderAdapter.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 import { buildProviderProcessEnv } from "../providerProcessEnv.ts";
 
 const PROVIDER = "grok" as const;
+export const resolveGrokStartInstanceId = resolveProviderSessionInstanceId;
 const GROK_RESUME_VERSION = 1 as const;
 const GROK_MODEL_DISCOVERY_TIMEOUT_MS = 15_000;
 const GROK_ACP_TRANSPORT_DEBUG_MARKER = "grok-acp-meta-stripper-v2";
@@ -1133,7 +1135,7 @@ export function makeGrokAdapter(
           }
 
           const grokModelSelection = input.modelSelection;
-          const providerInstanceId = input.providerInstanceId ?? grokModelSelection?.instanceId;
+          const resolvedProviderInstanceId = resolveGrokStartInstanceId(input);
           const existing = sessions.get(input.threadId);
           if (existing && !existing.stopped) {
             yield* stopSessionInternal(existing);
@@ -1160,8 +1162,8 @@ export function makeGrokAdapter(
           const effectiveGrokSettings: GrokAcpRuntimeSettings = {
             homeDir: serverConfig.homeDir,
             isolationRootDir: serverConfig.stateDir,
-            ...(input.providerInstanceId !== undefined
-              ? { instanceId: input.providerInstanceId }
+            ...(resolvedProviderInstanceId !== undefined
+              ? { instanceId: resolvedProviderInstanceId }
               : {}),
             ...(grokSettings.binaryPath !== undefined
               ? { binaryPath: grokSettings.binaryPath }
@@ -1264,7 +1266,7 @@ export function makeGrokAdapter(
                     method: "session/request_permission",
                     rawPayload: params,
                   }),
-                  providerInstanceId,
+                  resolvedProviderInstanceId,
                 );
                 const resolved = yield* Deferred.await(decision);
                 pendingApprovals.delete(requestId);
@@ -1278,7 +1280,7 @@ export function makeGrokAdapter(
                     permissionRequest,
                     decision: resolved,
                   }),
-                  providerInstanceId,
+                  resolvedProviderInstanceId,
                 );
                 return {
                   outcome:
@@ -1312,7 +1314,9 @@ export function makeGrokAdapter(
           const now = yield* nowIso;
           const session: ProviderSession = {
             provider: PROVIDER,
-            ...(providerInstanceId ? { providerInstanceId } : {}),
+            ...(resolvedProviderInstanceId !== undefined
+              ? { providerInstanceId: resolvedProviderInstanceId }
+              : {}),
             status: "ready",
             runtimeMode: input.runtimeMode,
             cwd,

@@ -58,12 +58,14 @@ import {
 } from "../Errors.ts";
 import { probeGeminiCapabilities } from "../geminiAcpProbe.ts";
 import { GeminiAdapter, type GeminiAdapterShape } from "../Services/GeminiAdapter.ts";
+import { resolveProviderSessionInstanceId } from "../Services/ProviderAdapter.ts";
 import { asArray, asNumber, asRecord, asString, trimToUndefined } from "../geminiValue.ts";
 import { extractProposedPlanMarkdown, withProviderPlanModePrompt } from "../planMode.ts";
 import { buildProviderProcessEnv } from "../providerProcessEnv.ts";
 import { type EventNdjsonLogger, makeEventNdjsonLogger } from "./EventNdjsonLogger.ts";
 
 const PROVIDER = "gemini" as const;
+export const resolveGeminiStartInstanceId = resolveProviderSessionInstanceId;
 const GEMINI_ACP_REQUEST_TIMEOUT_MS = 60_000;
 const GEMINI_ACP_PROMPT_TIMEOUT_MS = 30 * 60_000;
 const GEMINI_CHAT_DIR_NAME = "chats";
@@ -2172,10 +2174,13 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
       const binaryPath = trimToUndefined(providerOptions?.binaryPath) ?? "gemini";
       const runtimeModeId = runtimeModeToGeminiModeId(input.runtimeMode);
       const selectedGeminiModel = input.modelSelection?.model;
+      const resolvedProviderInstanceId = resolveGeminiStartInstanceId(input);
       const launchConfig = yield* prepareGeminiLaunchConfig({
         threadId: input.threadId,
         ...(selectedGeminiModel ? { selectedModel: selectedGeminiModel } : {}),
-        ...(input.providerInstanceId !== undefined ? { instanceId: input.providerInstanceId } : {}),
+        ...(resolvedProviderInstanceId !== undefined
+          ? { instanceId: resolvedProviderInstanceId }
+          : {}),
         ...(providerOptions?.environment !== undefined
           ? { environment: providerOptions.environment }
           : {}),
@@ -2207,8 +2212,8 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
         cwd,
         binaryPath,
         homePath: launchConfig.homePath,
-        ...(input.providerInstanceId !== undefined
-          ? { providerInstanceId: input.providerInstanceId }
+        ...(resolvedProviderInstanceId !== undefined
+          ? { providerInstanceId: resolvedProviderInstanceId }
           : {}),
         ...(providerOptions?.environment !== undefined
           ? { environment: providerOptions.environment }
