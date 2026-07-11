@@ -9,6 +9,7 @@ import { homedir } from "node:os";
 
 import {
   CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS,
+  CLAUDE_EXTERNAL_AUTH_ENV_KEYS,
   hasClaudeExternalAuthEnv,
   hasUsableClaudeCliCredentials,
 } from "./claudeProcessEnv.ts";
@@ -69,6 +70,16 @@ export function buildClaudeProcessEnv(input?: {
     // with an explicit home unless that instance deliberately configured it.
     if (!input?.environment || !("CLAUDE_CONFIG_DIR" in input.environment)) {
       delete env.CLAUDE_CONFIG_DIR;
+    }
+
+    // An explicit provider home selects a distinct account boundary. Ambient
+    // credentials and backend-routing flags belong to the server account and
+    // must never select it instead, even when the chosen home has no local OAuth.
+    // Instance-provided values remain authoritative for API-key/proxy/cloud setups.
+    for (const key of [...CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS, ...CLAUDE_EXTERNAL_AUTH_ENV_KEYS]) {
+      if (!input?.environment || !(key in input.environment)) {
+        delete env[key];
+      }
     }
   }
 

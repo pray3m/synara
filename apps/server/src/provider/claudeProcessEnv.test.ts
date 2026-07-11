@@ -10,6 +10,8 @@ import { describe, it, assert } from "@effect/vitest";
 
 import { buildClaudeProcessEnv } from "./claudeEnvironment.ts";
 import {
+  CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS,
+  CLAUDE_EXTERNAL_AUTH_ENV_KEYS,
   hasUsableClaudeCliCredentials,
   hasUsableClaudeCliCredentialsContent,
   readClaudeCliCredentialsContentSummary,
@@ -97,6 +99,11 @@ describe("claudeProcessEnv", () => {
         HOME: "/home/default",
         CLAUDE_CONFIG_DIR: "/home/default/.claude",
         ANTHROPIC_API_KEY: "stale-key",
+        ANTHROPIC_BASE_URL: "https://account-a.example.test",
+        CLAUDE_CODE_USE_BEDROCK: "1",
+        CLAUDE_CODE_USE_VERTEX: "1",
+        CLAUDE_CODE_USE_FOUNDRY: "1",
+        CLAUDE_CODE_USE_ANTHROPIC_AWS: "1",
       },
       homePath: "/home/work-account",
       hasClaudeCliCredentials: true,
@@ -105,6 +112,58 @@ describe("claudeProcessEnv", () => {
     assert.equal(result.HOME, "/home/work-account");
     assert.equal(result.CLAUDE_CONFIG_DIR, undefined);
     assert.equal(result.ANTHROPIC_API_KEY, undefined);
+    for (const key of CLAUDE_EXTERNAL_AUTH_ENV_KEYS) {
+      assert.equal(result[key], undefined);
+    }
+  });
+
+  it("does not fall back to ambient auth when an explicit instance home lacks OAuth", () => {
+    const inherited: NodeJS.ProcessEnv = {
+      HOME: "/home/account-a",
+      ANTHROPIC_API_KEY: "account-a-api-key",
+      ANTHROPIC_AUTH_TOKEN: "account-a-auth-token",
+      CLAUDE_CODE_OAUTH_TOKEN: "account-a-oauth-token",
+      ANTHROPIC_BASE_URL: "https://account-a.example.test",
+      CLAUDE_CODE_USE_BEDROCK: "1",
+      CLAUDE_CODE_USE_VERTEX: "1",
+      CLAUDE_CODE_USE_FOUNDRY: "1",
+      CLAUDE_CODE_USE_ANTHROPIC_AWS: "1",
+    };
+
+    const result = buildClaudeProcessEnv({
+      env: inherited,
+      homePath: "/home/account-b",
+      hasClaudeCliCredentials: false,
+    });
+
+    assert.equal(result.HOME, "/home/account-b");
+    for (const key of [...CLAUDE_DIRECT_CREDENTIAL_ENV_KEYS, ...CLAUDE_EXTERNAL_AUTH_ENV_KEYS]) {
+      assert.equal(result[key], undefined);
+      assert.notEqual(inherited[key], undefined);
+    }
+  });
+
+  it("preserves auth and backend routing explicitly configured by the selected instance", () => {
+    const result = buildClaudeProcessEnv({
+      env: {
+        HOME: "/home/account-a",
+        ANTHROPIC_API_KEY: "account-a-key",
+        ANTHROPIC_BASE_URL: "https://account-a.example.test",
+        CLAUDE_CODE_USE_FOUNDRY: "0",
+      },
+      homePath: "/home/account-b",
+      environment: {
+        ANTHROPIC_API_KEY: "account-b-key",
+        ANTHROPIC_BASE_URL: "https://account-b.example.test",
+        CLAUDE_CODE_USE_FOUNDRY: "1",
+      },
+      hasClaudeCliCredentials: true,
+    });
+
+    assert.equal(result.HOME, "/home/account-b");
+    assert.equal(result.ANTHROPIC_API_KEY, "account-b-key");
+    assert.equal(result.ANTHROPIC_BASE_URL, "https://account-b.example.test");
+    assert.equal(result.CLAUDE_CODE_USE_FOUNDRY, "1");
   });
 
   it("keeps an instance-configured Claude config directory with an explicit home", () => {
