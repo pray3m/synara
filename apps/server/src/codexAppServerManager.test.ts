@@ -1052,7 +1052,7 @@ describe("startSession", () => {
     rmSync(authHome, { recursive: true, force: true });
   });
 
-  it("inspects stale-auth sessions without stopping them until lifecycle listing", () => {
+  it("omits stale-auth sessions from inspection without stopping them until lifecycle listing", () => {
     const authHome = mkdtempSync(path.join(os.tmpdir(), "synara-codex-auth-inspection-"));
     const authPath = path.join(authHome, "auth.json");
     writeFileSync(
@@ -1102,12 +1102,7 @@ describe("startSession", () => {
         "utf8",
       );
 
-      expect(manager.inspectSessions()).toEqual([
-        {
-          session,
-          codexOptions: { homePath: authHome, accountId: "work" },
-        },
-      ]);
+      expect(manager.inspectSessions()).toEqual([]);
       expect(kill).not.toHaveBeenCalled();
       expect(close).not.toHaveBeenCalled();
 
@@ -1165,10 +1160,17 @@ describe("startSession", () => {
       stopping: false,
       authHomePath: authHome,
       authFingerprint: readCodexAuthFileFingerprint(authHome),
+      codexOptions: { homePath: authHome, accountId: "work" },
     });
 
     try {
       writeFileSync(authPath, auth("access-2", "refresh-2"), "utf8");
+      expect(manager.inspectSessions()).toEqual([
+        {
+          session,
+          codexOptions: { homePath: authHome, accountId: "work" },
+        },
+      ]);
       expect(manager.listSessions()).toEqual([session]);
       expect(kill).not.toHaveBeenCalled();
       expect(close).not.toHaveBeenCalled();

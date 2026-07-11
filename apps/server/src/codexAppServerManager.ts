@@ -1940,17 +1940,26 @@ export class CodexAppServerManager extends EventEmitter<CodexAppServerManagerEve
 
   /**
    * Side-effect-free snapshots for read-only consumers such as HTTP image
-   * allowlist resolution. Lifecycle callers should keep using listSessions so
-   * stale authentication still closes invalid provider processes.
+   * allowlist resolution. Stale-auth sessions are omitted so paths belonging
+   * to a previous account cannot remain trusted, but they are not stopped or
+   * removed here. Lifecycle callers should keep using listSessions to prune
+   * invalid provider processes.
    */
   inspectSessions(): CodexSessionInspection[] {
-    return Array.from(this.sessions.values(), ({ session, codexOptions }) => {
+    const inspections: CodexSessionInspection[] = [];
+    for (const context of this.sessions.values()) {
+      if (!this.isContextAuthCurrent(context)) {
+        continue;
+      }
+
+      const { session, codexOptions } = context;
       const snapshotOptions = normalizeCodexDiscoveryOptions(codexOptions);
-      return {
+      inspections.push({
         session: { ...session },
         ...(snapshotOptions ? { codexOptions: snapshotOptions } : {}),
-      };
-    });
+      });
+    }
+    return inspections;
   }
 
   hasSession(threadId: ThreadId): boolean {
