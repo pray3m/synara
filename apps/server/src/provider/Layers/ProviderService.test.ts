@@ -105,6 +105,37 @@ function makeSharedCodexContinuationFixture(
   };
 }
 
+function providerInstanceForSharedCodexFixture(
+  fixture: ReturnType<typeof makeSharedCodexContinuationFixture>,
+  accountId: string,
+) {
+  return {
+    driver: "codex" as const,
+    environment: fixture.instanceEnvironment,
+    config: {
+      homePath: fixture.homePath,
+      shadowHomePath: fixture.shadowHomePath(accountId),
+      accountId,
+    },
+  };
+}
+
+function requireSharedCodexFixtureGeneration(
+  fixture: ReturnType<typeof makeSharedCodexContinuationFixture>,
+  accountId: string,
+): string {
+  const generation = readCodexSharedContinuationGeneration({
+    env: { ...process.env, ...fixture.environment },
+    homePath: fixture.homePath,
+    shadowHomePath: fixture.shadowHomePath(accountId),
+    accountId,
+  });
+  if (!generation) {
+    assert.fail(`Expected prepared Codex continuation generation for '${accountId}'`);
+  }
+  return generation;
+}
+
 const providerServiceSecretBytes = new Map<string, Uint8Array>();
 const ProviderServiceTestSecretStoreLayer = Layer.succeed(ServerSecretStore, {
   get: (name) => Effect.succeed(providerServiceSecretBytes.get(name) ?? null),
@@ -853,6 +884,13 @@ it.effect(
     Effect.gen(function* () {
       const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "synara-provider-service-restart-"));
       const dbPath = path.join(tempDir, "orchestration.sqlite");
+      const fixture = makeSharedCodexContinuationFixture(["default"]);
+      const providerInstanceId = asProviderInstanceId("codex_restart");
+      const serverSettingsLayer = ServerSettingsService.layerTest({
+        providerInstances: {
+          codex_restart: providerInstanceForSharedCodexFixture(fixture, "default"),
+        },
+      });
       const persistenceLayer = makeSqlitePersistenceLive(dbPath);
       const runtimeRepositoryLayer = ProviderSessionRuntimeRepositoryLive.pipe(
         Layer.provide(persistenceLayer),
@@ -874,7 +912,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, firstRegistry)),
         Layer.provide(firstDirectoryLayer),
         Layer.provide(AnalyticsService.layerTest),
-        Layer.provide(ServerSettingsService.layerTest()),
+        Layer.provide(serverSettingsLayer),
         Layer.provide(ProviderServiceTestSecretStoreLayer),
       );
       const updatedResumeCursor = {
@@ -890,6 +928,7 @@ it.effect(
         const session = yield* provider.startSession(threadId, {
           provider: "codex",
           cwd: "/tmp/project",
+          providerInstanceId,
           runtimeMode: "full-access",
           threadId,
         });
@@ -927,7 +966,7 @@ it.effect(
         Layer.provide(Layer.succeed(ProviderAdapterRegistry, secondRegistry)),
         Layer.provide(secondDirectoryLayer),
         Layer.provide(AnalyticsService.layerTest),
-        Layer.provide(ServerSettingsService.layerTest()),
+        Layer.provide(serverSettingsLayer),
         Layer.provide(ProviderServiceTestSecretStoreLayer),
       );
 
@@ -949,6 +988,7 @@ it.effect(
         const startPayload = resumedStartInput as {
           provider?: string;
           cwd?: string;
+          expectedCodexContinuationGeneration?: string;
           resumeCursor?: unknown;
           threadId?: string;
         };
@@ -956,6 +996,10 @@ it.effect(
         assert.equal(startPayload.cwd, "/tmp/project");
         assert.deepEqual(startPayload.resumeCursor, updatedResumeCursor);
         assert.equal(startPayload.threadId, startedSession.threadId);
+        assert.equal(
+          startPayload.expectedCodexContinuationGeneration,
+          requireSharedCodexFixtureGeneration(fixture, "default"),
+        );
       }
       assert.equal(secondCodex.rollbackThread.mock.calls.length, 1);
       const rollbackCall = secondCodex.rollbackThread.mock.calls[0];
@@ -963,6 +1007,7 @@ it.effect(
       assert.equal(rollbackCall?.[1], 1);
 
       fs.rmSync(tempDir, { recursive: true, force: true });
+      fs.rmSync(fixture.root, { recursive: true, force: true });
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
@@ -2119,15 +2164,16 @@ routing.layer("ProviderServiceLive routing", (it) => {
       const provider = yield* ProviderService;
       const serverSettings = yield* ServerSettingsService;
       const threadId = asThreadId("thread-cross-instance-recovery");
+      const fixture = makeSharedCodexContinuationFixture(["personal", "work"]);
 
       yield* serverSettings.updateSettings({
         providerInstances: {
           codex_personal: {
-            driver: "codex",
+            ...providerInstanceForSharedCodexFixture(fixture, "personal"),
             displayName: "Codex Personal",
           },
           codex_work: {
-            driver: "codex",
+            ...providerInstanceForSharedCodexFixture(fixture, "work"),
             displayName: "Codex Work",
           },
         },
@@ -2164,8 +2210,13 @@ routing.layer("ProviderServiceLive routing", (it) => {
       if (resumedStartInput && typeof resumedStartInput === "object") {
         assert.equal(resumedStartInput.providerInstanceId, "codex_work");
         assert.deepEqual(resumedStartInput.resumeCursor, initial.resumeCursor);
+        assert.equal(
+          resumedStartInput.expectedCodexContinuationGeneration,
+          requireSharedCodexFixtureGeneration(fixture, "work"),
+        );
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      fs.rmSync(fixture.root, { recursive: true, force: true });
     }),
   );
 
@@ -2214,10 +2265,20 @@ routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("recovers stale persisted sessions for rollback by resuming thread identity", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = asThreadId("thread-stale-codex-rollback");
+      const fixture = makeSharedCodexContinuationFixture(["default"]);
+      const providerInstanceId = asProviderInstanceId("codex_stale_rollback");
+      yield* serverSettings.updateSettings({
+        providerInstances: {
+          codex_stale_rollback: providerInstanceForSharedCodexFixture(fixture, "default"),
+        },
+      });
 
-      const initial = yield* provider.startSession(asThreadId("thread-1"), {
+      const initial = yield* provider.startSession(threadId, {
         provider: "codex",
-        threadId: asThreadId("thread-1"),
+        providerInstanceId,
+        threadId,
         cwd: "/tmp/project",
         runtimeMode: "full-access",
       });
@@ -2237,6 +2298,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         const startPayload = resumedStartInput as {
           provider?: string;
           cwd?: string;
+          expectedCodexContinuationGeneration?: string;
           resumeCursor?: unknown;
           threadId?: string;
         };
@@ -2244,10 +2306,15 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.cwd, "/tmp/project");
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
+        assert.equal(
+          startPayload.expectedCodexContinuationGeneration,
+          requireSharedCodexFixtureGeneration(fixture, "default"),
+        );
       }
       assert.equal(routing.codex.rollbackThread.mock.calls.length, 1);
       const rollbackCall = routing.codex.rollbackThread.mock.calls[0];
       assert.equal(rollbackCall?.[1], 1);
+      fs.rmSync(fixture.root, { recursive: true, force: true });
     }),
   );
 
@@ -2278,10 +2345,20 @@ routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("recovers stale sessions for sendTurn using persisted cwd", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
+      const serverSettings = yield* ServerSettingsService;
+      const threadId = asThreadId("thread-stale-codex-send-turn");
+      const fixture = makeSharedCodexContinuationFixture(["default"]);
+      const providerInstanceId = asProviderInstanceId("codex_stale_send_turn");
+      yield* serverSettings.updateSettings({
+        providerInstances: {
+          codex_stale_send_turn: providerInstanceForSharedCodexFixture(fixture, "default"),
+        },
+      });
 
-      const initial = yield* provider.startSession(asThreadId("thread-1"), {
+      const initial = yield* provider.startSession(threadId, {
         provider: "codex",
-        threadId: asThreadId("thread-1"),
+        providerInstanceId,
+        threadId,
         cwd: "/tmp/project-send-turn",
         runtimeMode: "full-access",
       });
@@ -2303,6 +2380,7 @@ routing.layer("ProviderServiceLive routing", (it) => {
         const startPayload = resumedStartInput as {
           provider?: string;
           cwd?: string;
+          expectedCodexContinuationGeneration?: string;
           resumeCursor?: unknown;
           threadId?: string;
         };
@@ -2310,8 +2388,13 @@ routing.layer("ProviderServiceLive routing", (it) => {
         assert.equal(startPayload.cwd, "/tmp/project-send-turn");
         assert.deepEqual(startPayload.resumeCursor, initial.resumeCursor);
         assert.equal(startPayload.threadId, initial.threadId);
+        assert.equal(
+          startPayload.expectedCodexContinuationGeneration,
+          requireSharedCodexFixtureGeneration(fixture, "default"),
+        );
       }
       assert.equal(routing.codex.sendTurn.mock.calls.length, 1);
+      fs.rmSync(fixture.root, { recursive: true, force: true });
     }),
   );
 
@@ -2368,15 +2451,17 @@ routing.layer("ProviderServiceLive routing", (it) => {
   it.effect("lists no sessions after adapter runtime clears", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
+      const firstThreadId = asThreadId("thread-list-cleared-1");
+      const secondThreadId = asThreadId("thread-list-cleared-2");
 
-      yield* provider.startSession(asThreadId("thread-1"), {
+      yield* provider.startSession(firstThreadId, {
         provider: "codex",
-        threadId: asThreadId("thread-1"),
+        threadId: firstThreadId,
         runtimeMode: "full-access",
       });
-      yield* provider.startSession(asThreadId("thread-2"), {
+      yield* provider.startSession(secondThreadId, {
         provider: "codex",
-        threadId: asThreadId("thread-2"),
+        threadId: secondThreadId,
         runtimeMode: "full-access",
       });
 
@@ -2392,10 +2477,11 @@ routing.layer("ProviderServiceLive routing", (it) => {
     Effect.gen(function* () {
       const provider = yield* ProviderService;
       const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const threadId = asThreadId("thread-runtime-status-transitions");
 
-      const session = yield* provider.startSession(asThreadId("thread-1"), {
+      const session = yield* provider.startSession(threadId, {
         provider: "codex",
-        threadId: asThreadId("thread-1"),
+        threadId,
         runtimeMode: "full-access",
       });
       yield* provider.sendTurn({
@@ -3421,17 +3507,27 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
     Effect.gen(function* () {
       const provider = yield* ProviderService;
       const runtimeRepository = yield* ProviderSessionRuntimeRepository;
+      const serverSettings = yield* ServerSettingsService;
       const threadId = asThreadId("thread-idle-fired-new-turn");
+      const fixture = makeSharedCodexContinuationFixture(["default"]);
+      const providerInstanceId = asProviderInstanceId("codex_idle_fired");
+      yield* serverSettings.updateSettings({
+        providerInstances: {
+          codex_idle_fired: providerInstanceForSharedCodexFixture(fixture, "default"),
+        },
+      });
       let listSessionsStarted = false;
       let releaseListSessions: ReleaseListSessions | undefined;
 
       idleCleanup.codex.stopSession.mockClear();
       const session = yield* provider.startSession(threadId, {
         provider: "codex",
+        providerInstanceId,
         threadId,
         runtimeMode: "full-access",
       });
       const { resumeCursor: _omittedResumeCursor, ...staleReadySession } = session;
+      idleCleanup.codex.startSession.mockClear();
 
       idleCleanup.codex.listSessions
         .mockImplementationOnce(() => Effect.succeed([session]))
@@ -3450,6 +3546,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
         type: "turn.completed",
         eventId: asEventId("runtime-idle-fired-before-new-turn"),
         provider: "codex",
+        providerInstanceId,
         createdAt: "2026-02-27T00:04:00.000Z",
         threadId,
         payload: { state: "completed" },
@@ -3491,6 +3588,11 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
       yield* sleep(100);
 
       assert.equal(idleCleanup.codex.stopSession.mock.calls.length, 1);
+      assert.equal(idleCleanup.codex.startSession.mock.calls.length, 1);
+      assert.equal(
+        idleCleanup.codex.startSession.mock.calls[0]?.[0].expectedCodexContinuationGeneration,
+        requireSharedCodexFixtureGeneration(fixture, "default"),
+      );
       const persistedAfter = yield* runtimeRepository.getByThreadId({ threadId });
       assert.equal(Option.isSome(persistedAfter), true);
       if (Option.isSome(persistedAfter)) {
@@ -3504,6 +3606,7 @@ idleCleanup.layer("ProviderServiceLive idle cleanup", (it) => {
           true,
         );
       }
+      fs.rmSync(fixture.root, { recursive: true, force: true });
     }),
   );
 
@@ -4080,9 +4183,10 @@ fanout.layer("ProviderServiceLive fanout", (it) => {
   it.effect("keeps subscriber delivery ordered and isolates failing subscribers", () =>
     Effect.gen(function* () {
       const provider = yield* ProviderService;
-      const session = yield* provider.startSession(asThreadId("thread-1"), {
+      const threadId = asThreadId("thread-ordered-subscriber-delivery");
+      const session = yield* provider.startSession(threadId, {
         provider: "codex",
-        threadId: asThreadId("thread-1"),
+        threadId,
         runtimeMode: "full-access",
       });
 
