@@ -746,12 +746,22 @@ const makeGeminiAdapter = Effect.fn("makeGeminiAdapter")(function* (
     readonly environment?: Readonly<Record<string, string>>;
     readonly instanceId?: string;
   }) {
-    const baseEnv = buildProviderProcessEnv({
-      driver: PROVIDER,
-      homeDir: serverConfig.homeDir,
-      isolationRootDir: serverConfig.stateDir,
-      ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
-      ...(input.environment !== undefined ? { environment: input.environment } : {}),
+    const baseEnv = yield* Effect.try({
+      try: () =>
+        buildProviderProcessEnv({
+          driver: PROVIDER,
+          homeDir: serverConfig.homeDir,
+          isolationRootDir: serverConfig.stateDir,
+          ...(input.instanceId !== undefined ? { instanceId: input.instanceId } : {}),
+          ...(input.environment !== undefined ? { environment: input.environment } : {}),
+        }),
+      catch: (cause) =>
+        new ProviderAdapterProcessError({
+          provider: PROVIDER,
+          threadId: input.threadId,
+          detail: "Failed to prepare the private Gemini account home.",
+          cause,
+        }),
     });
     const candidateModels = [
       ...MODEL_OPTIONS_BY_PROVIDER.gemini.map((option) => option.slug),

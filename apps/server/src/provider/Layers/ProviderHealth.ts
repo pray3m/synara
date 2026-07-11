@@ -744,14 +744,43 @@ const makeProviderProbeEnv = (
   environment?: Readonly<Record<string, string>>,
   instanceId?: string,
   paths?: { readonly homeDir: string; readonly isolationRootDir: string },
-): NodeJS.ProcessEnv =>
-  buildProviderProcessEnv({
-    driver,
-    ...(environment !== undefined ? { environment } : {}),
-    ...(instanceId !== undefined ? { instanceId } : {}),
-    ...(paths?.homeDir !== undefined ? { homeDir: paths.homeDir } : {}),
-    ...(paths?.isolationRootDir !== undefined ? { isolationRootDir: paths.isolationRootDir } : {}),
-  });
+):
+  | { readonly ok: true; readonly env: NodeJS.ProcessEnv }
+  | { readonly ok: false; readonly cause: unknown } => {
+  try {
+    return {
+      ok: true,
+      env: buildProviderProcessEnv({
+        driver,
+        ...(environment !== undefined ? { environment } : {}),
+        ...(instanceId !== undefined ? { instanceId } : {}),
+        ...(paths?.homeDir !== undefined ? { homeDir: paths.homeDir } : {}),
+        ...(paths?.isolationRootDir !== undefined
+          ? { isolationRootDir: paths.isolationRootDir }
+          : {}),
+      }),
+    };
+  } catch (cause) {
+    return { ok: false, cause };
+  }
+};
+
+function providerHomePreparationFailure(
+  provider: ProviderProcessEnvDriver,
+  checkedAt: string,
+  cause: unknown,
+): ServerProviderStatus {
+  return {
+    provider,
+    instanceId: provider,
+    driver: provider,
+    status: "error",
+    available: false,
+    authStatus: "unknown",
+    checkedAt,
+    message: `Failed to prepare the private provider account home. ${cause instanceof Error ? cause.message : String(cause)}`,
+  };
+}
 
 export const makeProviderUpdateEnv = (
   instance: ResolvedProviderInstance,
@@ -1412,7 +1441,11 @@ export const makeCheckGeminiProviderStatus = (
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "gemini";
-    const probeEnv = makeProviderProbeEnv(GEMINI_PROVIDER, environment, instanceId, paths);
+    const probeEnvResult = makeProviderProbeEnv(GEMINI_PROVIDER, environment, instanceId, paths);
+    if (!probeEnvResult.ok) {
+      return providerHomePreparationFailure(GEMINI_PROVIDER, checkedAt, probeEnvResult.cause);
+    }
+    const probeEnv = probeEnvResult.env;
 
     const versionProbe = yield* runGeminiCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1519,7 +1552,11 @@ export const makeCheckGrokProviderStatus = (
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "grok";
-    const probeEnv = makeProviderProbeEnv(GROK_PROVIDER, environment, instanceId, paths);
+    const probeEnvResult = makeProviderProbeEnv(GROK_PROVIDER, environment, instanceId, paths);
+    if (!probeEnvResult.ok) {
+      return providerHomePreparationFailure(GROK_PROVIDER, checkedAt, probeEnvResult.cause);
+    }
+    const probeEnv = probeEnvResult.env;
 
     const versionProbe = yield* runGrokCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1659,7 +1696,11 @@ export const makeCheckOpenCodeProviderStatus = (
     }
 
     const executable = nonEmptyTrimmed(binaryPath) ?? "opencode";
-    const probeEnv = makeProviderProbeEnv(OPENCODE_PROVIDER, environment, instanceId, paths);
+    const probeEnvResult = makeProviderProbeEnv(OPENCODE_PROVIDER, environment, instanceId, paths);
+    if (!probeEnvResult.ok) {
+      return providerHomePreparationFailure(OPENCODE_PROVIDER, checkedAt, probeEnvResult.cause);
+    }
+    const probeEnv = probeEnvResult.env;
 
     const versionProbe = yield* runOpenCodeCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(OPENCODE_HEALTH_TIMEOUT_MS),
@@ -1754,7 +1795,11 @@ export const makeCheckKiloProviderStatus = (
     }
 
     const executable = nonEmptyTrimmed(binaryPath) ?? "kilo";
-    const probeEnv = makeProviderProbeEnv(KILO_PROVIDER, environment, instanceId, paths);
+    const probeEnvResult = makeProviderProbeEnv(KILO_PROVIDER, environment, instanceId, paths);
+    if (!probeEnvResult.ok) {
+      return providerHomePreparationFailure(KILO_PROVIDER, checkedAt, probeEnvResult.cause);
+    }
+    const probeEnv = probeEnvResult.env;
 
     const versionProbe = yield* runKiloCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1835,7 +1880,11 @@ export const checkPiProviderStatus = (
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = nonEmptyTrimmed(binaryPath) ?? "pi";
-    const probeEnv = makeProviderProbeEnv(PI_PROVIDER, environment, instanceId, paths);
+    const probeEnvResult = makeProviderProbeEnv(PI_PROVIDER, environment, instanceId, paths);
+    if (!probeEnvResult.ok) {
+      return providerHomePreparationFailure(PI_PROVIDER, checkedAt, probeEnvResult.cause);
+    }
+    const probeEnv = probeEnvResult.env;
 
     const versionProbe = yield* runPiCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -1919,7 +1968,11 @@ export const makeCheckCursorProviderStatus = (
   Effect.gen(function* () {
     const checkedAt = new Date().toISOString();
     const executable = resolveCursorAgentBinaryPath(nonEmptyTrimmed(binaryPath));
-    const probeEnv = makeProviderProbeEnv(CURSOR_PROVIDER, environment, instanceId, paths);
+    const probeEnvResult = makeProviderProbeEnv(CURSOR_PROVIDER, environment, instanceId, paths);
+    if (!probeEnvResult.ok) {
+      return providerHomePreparationFailure(CURSOR_PROVIDER, checkedAt, probeEnvResult.cause);
+    }
+    const probeEnv = probeEnvResult.env;
 
     const versionProbe = yield* runCursorCommand(["--version"], executable, probeEnv).pipe(
       Effect.timeoutOption(DEFAULT_TIMEOUT_MS),
@@ -3172,14 +3225,17 @@ export const ProviderHealthLive = Layer.effect(
           }),
         );
 
-        const commandResult = yield* runUpdateCommand({
-          command: update.executable,
-          args: update.args,
-          env: makeProviderUpdateEnv(instance, {
-            homeDir: serverConfig.homeDir,
-            isolationRootDir: serverConfig.stateDir,
-          }),
+        const commandResult = yield* Effect.try({
+          try: () =>
+            makeProviderUpdateEnv(instance, {
+              homeDir: serverConfig.homeDir,
+              isolationRootDir: serverConfig.stateDir,
+            }),
+          catch: toUpdateError,
         }).pipe(
+          Effect.flatMap((env) =>
+            runUpdateCommand({ command: update.executable, args: update.args, env }),
+          ),
           Effect.scoped,
           Effect.timeoutOption(Duration.millis(UPDATE_TIMEOUT_MS)),
           Effect.result,

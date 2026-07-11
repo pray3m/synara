@@ -5,6 +5,7 @@
 
 import { Effect, Exit, Fiber, Layer, Schema, Scope } from "effect";
 import * as Semaphore from "effect/Semaphore";
+import { createHash } from "node:crypto";
 
 import type {
   ChatAttachment,
@@ -107,6 +108,7 @@ interface SharedOpenCodeTextGenerationServerState {
   experimentalWebSockets: boolean;
   environmentKey: string | null;
   instanceId: string | null;
+  accountScopeKey: string | null;
   activeRequests: number;
   idleCloseFiber: Fiber.Fiber<void, never> | null;
 }
@@ -120,25 +122,18 @@ interface AcquiredOpenCodeTextGenerationServer {
 type OpenCodeCompatibleTextGenerationProvider = "opencode" | "kilo";
 type OpenCodeCompatibleModelSelection = OpenCodeModelSelection;
 
-function environmentFingerprint(
+export function openCodeTextGenerationEnvironmentFingerprint(
   environment: Readonly<Record<string, string>> | undefined,
-): string | null {
-  if (!environment || Object.keys(environment).length === 0) {
-    return null;
-  }
+): string {
+  if (environment === undefined) return "absent";
   const entries = Object.entries(environment)
     .toSorted(([left], [right]) => left.localeCompare(right))
     .map(([name, value]) => [name, hashCacheComponent(value)]);
-  return JSON.stringify(entries);
+  return `present:${createHash("sha256").update(JSON.stringify(entries)).digest("hex")}`;
 }
 
 function hashCacheComponent(value: string): string {
-  let hash = 0x811c9dc5;
-  for (let index = 0; index < value.length; index += 1) {
-    hash ^= value.charCodeAt(index);
-    hash = Math.imul(hash, 0x01000193);
-  }
-  return (hash >>> 0).toString(36);
+  return createHash("sha256").update(value, "utf8").digest("hex");
 }
 
 interface OpenCodeCompatibleTextGenerationConfig {
@@ -186,6 +181,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
       experimentalWebSockets: false,
       environmentKey: null,
       instanceId: null,
+      accountScopeKey: null,
       activeRequests: 0,
       idleCloseFiber: null,
     };
@@ -199,6 +195,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
       sharedServerState.experimentalWebSockets = false;
       sharedServerState.environmentKey = null;
       sharedServerState.instanceId = null;
+      sharedServerState.accountScopeKey = null;
       if (scope !== null) {
         yield* Scope.close(scope, Exit.void).pipe(Effect.ignore);
       }
@@ -240,6 +237,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
       readonly environment?: Readonly<Record<string, string>>;
       readonly environmentKey: string | null;
       readonly instanceId?: string;
+      readonly accountScopeKey: string;
       readonly operation: TextGenerationOperation;
     }) =>
       sharedServerMutex.withPermit(
@@ -294,10 +292,14 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
               sharedServerState.experimentalWebSockets === input.experimentalWebSockets &&
               sharedServerState.environmentKey === input.environmentKey;
             const sameInstance = sharedServerState.instanceId === (input.instanceId ?? null);
-            if ((!sameConfigScope || !sameInstance) && sharedServerState.activeRequests === 0) {
+            const sameAccountScope = sharedServerState.accountScopeKey === input.accountScopeKey;
+            if (
+              (!sameConfigScope || !sameInstance || !sameAccountScope) &&
+              sharedServerState.activeRequests === 0
+            ) {
               yield* closeSharedServer();
             } else {
-              if (!sameConfigScope || !sameInstance) {
+              if (!sameConfigScope || !sameInstance || !sameAccountScope) {
                 yield* Effect.logWarning(
                   `${config.displayName} shared server config scope mismatch: requested ` +
                     input.binaryPath +
@@ -339,6 +341,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
               sharedServerState.experimentalWebSockets = input.experimentalWebSockets;
               sharedServerState.environmentKey = input.environmentKey;
               sharedServerState.instanceId = input.instanceId ?? null;
+              sharedServerState.accountScopeKey = input.accountScopeKey;
               sharedServerState.activeRequests = 1;
               return {
                 server,
@@ -407,7 +410,7 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
         "experimentalWebSockets" in providerOptions &&
         providerOptions.experimentalWebSockets === true;
       const environment = providerOptions?.environment;
-      const environmentKey = environmentFingerprint(environment);
+      const environmentKey = openCodeTextGenerationEnvironmentFingerprint(environment);
       const providerId = parsedModel.providerID;
       const modelId = parsedModel.modelID;
       const agent = getModelSelectionStringOptionValue(input.modelSelection, "agent")?.trim();
@@ -512,6 +515,11 @@ const makeOpenCodeCompatibleTextGeneration = (config: OpenCodeCompatibleTextGene
                 ...(input.modelSelection.instanceId !== undefined
                   ? { instanceId: input.modelSelection.instanceId }
                   : {}),
+                accountScopeKey: JSON.stringify([
+                  input.modelSelection.instanceId ?? null,
+                  serverConfig.homeDir,
+                  serverConfig.stateDir,
+                ]),
                 environmentKey,
                 operation: input.operation,
               }),

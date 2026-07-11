@@ -7,7 +7,7 @@ import * as NodeServices from "@effect/platform-node/NodeServices";
 import { it } from "@effect/vitest";
 import { Duration, Effect, Fiber, Layer } from "effect";
 import { TestClock } from "effect/testing";
-import { beforeEach, expect } from "vitest";
+import { beforeEach, expect, test } from "vitest";
 
 import { ServerConfig } from "../../config.ts";
 import {
@@ -16,7 +16,19 @@ import {
   type OpenCodeRuntimeShape,
 } from "../../provider/opencodeRuntime.ts";
 import { OpenCodeTextGeneration } from "../Services/TextGeneration.ts";
-import { OpenCodeTextGenerationServiceLive } from "./OpenCodeTextGeneration.ts";
+import {
+  OpenCodeTextGenerationServiceLive,
+  openCodeTextGenerationEnvironmentFingerprint,
+} from "./OpenCodeTextGeneration.ts";
+
+test("text-generation environment fingerprints preserve presence and resist old hash collisions", () => {
+  expect(openCodeTextGenerationEnvironmentFingerprint(undefined)).not.toBe(
+    openCodeTextGenerationEnvironmentFingerprint({}),
+  );
+  expect(openCodeTextGenerationEnvironmentFingerprint({ OPENAI_API_KEY: "a02hh7njhk5" })).not.toBe(
+    openCodeTextGenerationEnvironmentFingerprint({ OPENAI_API_KEY: "p7fe9wsknu9" }),
+  );
+});
 
 const runtimeMock = {
   state: {

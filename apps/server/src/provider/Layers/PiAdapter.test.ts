@@ -11,6 +11,7 @@ import {
   createPiModelRegistry,
   getPiSupportedThinkingOptions,
   makePiStoragePaths,
+  resolvePiExtensionMode,
   makePiUserInputOptions,
   PLAIN_PI_EXTENSION_THEME,
 } from "./PiAdapter";
@@ -56,6 +57,45 @@ describe("makePiStoragePaths", () => {
     expect(paths.agentDir).toContain("/state/provider-homes/pi/");
     expect(paths.agentDir.endsWith("/.pi/agent")).toBe(true);
     expect(paths.sessionDir).toBe(`${paths.agentDir}/sessions`);
+  });
+});
+
+describe("resolvePiExtensionMode", () => {
+  it("preserves default-only extension behavior", () => {
+    expect(
+      resolvePiExtensionMode({
+        isolatedAccount: false,
+        hasExtensionEnabledDefault: false,
+        hasIsolatedMode: false,
+      }),
+    ).toEqual({ noExtensions: false });
+  });
+
+  it("forces noExtensions for isolated accounts and coexisting default discovery", () => {
+    expect(
+      resolvePiExtensionMode({
+        isolatedAccount: true,
+        hasExtensionEnabledDefault: false,
+        hasIsolatedMode: false,
+      }),
+    ).toEqual({ noExtensions: true });
+    expect(
+      resolvePiExtensionMode({
+        isolatedAccount: false,
+        hasExtensionEnabledDefault: false,
+        hasIsolatedMode: true,
+      }),
+    ).toEqual({ noExtensions: true });
+  });
+
+  it("rejects isolated startup while an extension-enabled default is active", () => {
+    expect(() =>
+      resolvePiExtensionMode({
+        isolatedAccount: true,
+        hasExtensionEnabledDefault: true,
+        hasIsolatedMode: false,
+      }),
+    ).toThrow(/Stop extension-enabled default Pi sessions/);
   });
 });
 
@@ -619,6 +659,11 @@ describe("isolated Pi provider routing", () => {
   const makeRegistry = (
     environment: Record<string, string>,
     credential?: { provider: string; key: string },
+    options?: {
+      models?: Array<Model<Api>>;
+      providerRequestConfigs?: Map<string, Record<string, unknown>>;
+      modelRequestHeaders?: Map<string, Record<string, string>>;
+    },
   ) => {
     const authStorage = {
       setRuntimeApiKey: vi.fn(),
@@ -636,8 +681,9 @@ describe("isolated Pi provider routing", () => {
       reload: vi.fn(),
     } as unknown as AuthStorage;
     const registry = {
-      providerRequestConfigs: new Map(),
-      modelRequestHeaders: new Map(),
+      models: options?.models ?? [],
+      providerRequestConfigs: options?.providerRequestConfigs ?? new Map(),
+      modelRequestHeaders: options?.modelRequestHeaders ?? new Map(),
       getApiKeyAndHeaders: vi.fn(),
       getApiKeyForProvider: vi.fn(),
       getProviderAuthStatus: vi.fn(() => ({ configured: false })),
@@ -661,19 +707,29 @@ describe("isolated Pi provider routing", () => {
   });
 
   it("resolves Cloudflare routing only from the selected instance", async () => {
-    const registry = makeRegistry({
-      CLOUDFLARE_ACCOUNT_ID: "account-b",
-      CLOUDFLARE_GATEWAY_ID: "gateway-b",
-      CLOUDFLARE_API_KEY: "key-b",
-    });
-    const model = {
+    const sharedModel = {
       provider: "cloudflare-ai-gateway",
       id: "model",
       baseUrl:
-        "https://gateway.ai.cloudflare.com/v1/${CLOUDFLARE_ACCOUNT_ID}/${CLOUDFLARE_GATEWAY_ID}",
+        "https://gateway.ai.cloudflare.com/v1/{CLOUDFLARE_ACCOUNT_ID}/{CLOUDFLARE_GATEWAY_ID}",
     } as Model<Api>;
-    await registry.getApiKeyAndHeaders(model);
-    expect(model.baseUrl).toContain("/account-b/gateway-b");
+    const registryA = makeRegistry(
+      { CLOUDFLARE_ACCOUNT_ID: "account-a", CLOUDFLARE_GATEWAY_ID: "gateway-a" },
+      undefined,
+      { models: [sharedModel] },
+    );
+    const registryB = makeRegistry(
+      { CLOUDFLARE_ACCOUNT_ID: "account-b", CLOUDFLARE_GATEWAY_ID: "gateway-b" },
+      undefined,
+      { models: [sharedModel] },
+    );
+    const modelB = (registryB as unknown as { models: Model<Api>[] }).models[0]!;
+    const modelA = (registryA as unknown as { models: Model<Api>[] }).models[0]!;
+    await registryB.getApiKeyAndHeaders(modelB);
+    await registryA.getApiKeyAndHeaders(modelA);
+    expect(modelA.baseUrl).toContain("/account-a/gateway-a");
+    expect(modelB.baseUrl).toContain("/account-b/gateway-b");
+    expect(sharedModel.baseUrl).toContain("{CLOUDFLARE_ACCOUNT_ID}");
   });
 
   it("suppresses ambient OpenAI and Anthropic routing headers", async () => {
@@ -696,6 +752,50 @@ describe("isolated Pi provider routing", () => {
         api: "anthropic-messages",
       } as Model<Api>),
     ).resolves.toMatchObject({ ok: true, headers: { Authorization: null } });
+  });
+
+  it("preserves explicit mixed-case models.json routing headers", async () => {
+    const openai = makeRegistry({ OPENAI_API_KEY: "key-b" }, undefined, {
+      providerRequestConfigs: new Map([
+        [
+          "openai",
+          {
+            headers: {
+              "openai-organization": "explicit-org",
+              "OPENAI-PROJECT": "explicit-project",
+            },
+          },
+        ],
+      ]),
+    });
+    const openaiAuth = await openai.getApiKeyAndHeaders({
+      provider: "openai",
+      id: "model",
+      api: "openai-responses",
+    } as Model<Api>);
+    expect(openaiAuth).toMatchObject({
+      ok: true,
+      headers: { "openai-organization": "explicit-org", "OPENAI-PROJECT": "explicit-project" },
+    });
+    expect((openaiAuth as { headers?: Record<string, unknown> }).headers).not.toHaveProperty(
+      "OpenAI-Organization",
+    );
+
+    const anthropic = makeRegistry({ ANTHROPIC_API_KEY: "key-b" }, undefined, {
+      modelRequestHeaders: new Map([
+        ["anthropic:model", { aUtHoRiZaTiOn: "Bearer explicit-token" }],
+      ]),
+    });
+    await expect(
+      anthropic.getApiKeyAndHeaders({
+        provider: "anthropic",
+        id: "model",
+        api: "anthropic-messages",
+      } as Model<Api>),
+    ).resolves.toMatchObject({
+      ok: true,
+      headers: { aUtHoRiZaTiOn: "Bearer explicit-token" },
+    });
   });
 });
 

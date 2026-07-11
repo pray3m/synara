@@ -13,6 +13,8 @@ import type {
 } from "@earendil-works/pi-coding-agent";
 import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Api, ImageContent, Model, TextContent } from "@earendil-works/pi-ai";
+import { resetApiProviders } from "@earendil-works/pi-ai";
+import { resetOAuthProviders } from "@earendil-works/pi-ai/oauth";
 import {
   ApprovalRequestId,
   type ChatAttachment,
@@ -107,6 +109,20 @@ interface PiSessionContext {
   stopped: boolean;
   lastKnownTokenUsage: ThreadTokenUsageSnapshot | undefined;
   unsubscribe: (() => void) | undefined;
+  extensionsEnabled: boolean;
+}
+
+export function resolvePiExtensionMode(input: {
+  readonly isolatedAccount: boolean;
+  readonly hasExtensionEnabledDefault: boolean;
+  readonly hasIsolatedMode: boolean;
+}): { readonly noExtensions: boolean } {
+  if (input.isolatedAccount && input.hasExtensionEnabledDefault) {
+    throw new Error(
+      "Stop extension-enabled default Pi sessions before starting an isolated Pi account.",
+    );
+  }
+  return { noExtensions: input.isolatedAccount || input.hasIsolatedMode };
 }
 
 interface PiStoredTurn {
@@ -898,6 +914,12 @@ interface PiProviderRequestConfig {
 interface PiModelRegistryInternals {
   readonly providerRequestConfigs?: ReadonlyMap<string, PiProviderRequestConfig>;
   readonly modelRequestHeaders?: ReadonlyMap<string, Readonly<Record<string, string>>>;
+  models?: Array<Model<Api>>;
+}
+
+function hasHeader(headers: Readonly<Record<string, unknown>> | undefined, name: string): boolean {
+  const normalized = name.toLowerCase();
+  return Object.keys(headers ?? {}).some((header) => header.toLowerCase() === normalized);
 }
 
 function buildPiSelectedEnvironment(
@@ -1121,12 +1143,11 @@ function isolatePiModelRegistryFromAmbientEnvironment(
   registry.getApiKeyAndHeaders = async (model) => {
     try {
       if (model.provider.startsWith("cloudflare-")) {
-        const mutableModel = model as Model<Api> & { baseUrl: string };
-        mutableModel.baseUrl = mutableModel.baseUrl.replace(
-          /\$\{?(CLOUDFLARE_(?:ACCOUNT|GATEWAY)_ID)\}?/gu,
+        model.baseUrl = model.baseUrl.replace(
+          /(?:\$\{?|\{)(CLOUDFLARE_(?:ACCOUNT|GATEWAY)_ID)\}?/gu,
           (_match, name: string) => configResolver.selectedValue(name) ?? _match,
         );
-        if (/\$\{?CLOUDFLARE_(?:ACCOUNT|GATEWAY)_ID\}?/u.test(mutableModel.baseUrl)) {
+        if (/(?:\$\{?|\{)CLOUDFLARE_(?:ACCOUNT|GATEWAY)_ID\}?/u.test(model.baseUrl)) {
           return {
             ok: false,
             error: `Missing isolated Cloudflare routing value for ${model.provider}`,
@@ -1186,22 +1207,29 @@ function isolatePiModelRegistryFromAmbientEnvironment(
           : undefined;
       const api = (model as { readonly api?: string }).api;
       if (api?.startsWith("openai-")) {
-        headers = {
-          ...headers,
-          "OpenAI-Organization":
-            configResolver.selectedValue("OPENAI_ORG_ID") ??
-            configResolver.selectedValue("OPENAI_ORGANIZATION") ??
-            null,
-          "OpenAI-Project":
-            configResolver.selectedValue("OPENAI_PROJECT_ID") ??
-            configResolver.selectedValue("OPENAI_PROJECT") ??
-            null,
-        } as unknown as Record<string, string>;
+        if (!hasHeader(headers, "OpenAI-Organization")) {
+          headers = {
+            ...headers,
+            "OpenAI-Organization":
+              configResolver.selectedValue("OPENAI_ORG_ID") ??
+              configResolver.selectedValue("OPENAI_ORGANIZATION") ??
+              null,
+          } as unknown as Record<string, string>;
+        }
+        if (!hasHeader(headers, "OpenAI-Project")) {
+          headers = {
+            ...headers,
+            "OpenAI-Project":
+              configResolver.selectedValue("OPENAI_PROJECT_ID") ??
+              configResolver.selectedValue("OPENAI_PROJECT") ??
+              null,
+          } as unknown as Record<string, string>;
+        }
       }
       if (
         api === "anthropic-messages" &&
         !String(apiKey ?? "").startsWith("sk-ant-oat") &&
-        headers?.Authorization === undefined
+        !hasHeader(headers, "Authorization")
       ) {
         const authToken = configResolver.selectedValue("ANTHROPIC_AUTH_TOKEN");
         headers = {
@@ -1299,6 +1327,14 @@ export function createPiModelRegistry(
   }
   applyPiRuntimeApiKeysFromEnvironment(authStorage, runtimeEnvironment);
   const registry = piSdk.ModelRegistry.create(authStorage, path.join(agentDir, "models.json"));
+  const registryInternals = registry as unknown as PiModelRegistryInternals;
+  if (hasAccountBoundary && registryInternals.models) {
+    registryInternals.models = registryInternals.models.map((model) => ({
+      ...model,
+      ...(model.headers ? { headers: { ...model.headers } } : {}),
+      ...(model.compat ? { compat: { ...model.compat } } : {}),
+    }));
+  }
   if (configResolver) {
     isolatePiModelRegistryFromAmbientEnvironment(registry, authStorage, configResolver);
   }
@@ -1398,6 +1434,32 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
     const fileSystem = yield* FileSystem.FileSystem;
     const runtimeEventQueue = yield* Queue.unbounded<ProviderRuntimeEvent>();
     const sessions = new Map<ThreadId, PiSessionContext>();
+    const shouldDisableExtensions = (
+      environment: Readonly<Record<string, string>> | undefined,
+      instanceId: string | undefined,
+    ) =>
+      environment !== undefined ||
+      (instanceId !== undefined && instanceId !== PROVIDER) ||
+      [...sessions.values()].some((context) => !context.extensionsEnabled);
+    const preparePiDiscoveryMode = (
+      environment: Readonly<Record<string, string>> | undefined,
+      instanceId: string | undefined,
+    ) => {
+      const isolated =
+        environment !== undefined || (instanceId !== undefined && instanceId !== PROVIDER);
+      const mode = resolvePiExtensionMode({
+        isolatedAccount: isolated,
+        hasExtensionEnabledDefault: [...sessions.values()].some(
+          (context) => context.extensionsEnabled,
+        ),
+        hasIsolatedMode: [...sessions.values()].some((context) => !context.extensionsEnabled),
+      });
+      if (isolated) {
+        resetApiProviders();
+        resetOAuthProviders();
+      }
+      return mode.noExtensions;
+    };
     const modelRegistryContexts = new Map<string, PiModelRegistryContext>();
     const ownsNativeEventLogger = options?.nativeEventLogger === undefined;
     const nativeEventLogger =
@@ -2121,6 +2183,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
       sessionManager: SessionManager;
       modelId?: string;
       thinkingLevel?: ThinkingLevel;
+      noExtensions?: boolean;
     }) => {
       const { authStorage, registry } = await getModelRegistryContext(
         input.agentDir,
@@ -2139,6 +2202,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
           agentDir,
           authStorage,
           modelRegistry: registry,
+          ...(input.noExtensions ? { resourceLoaderOptions: { noExtensions: true } } : {}),
         });
         const model = findModelInRegistry(services.modelRegistry, input.modelId);
         if (input.modelId && !model) {
@@ -2191,6 +2255,31 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
               }),
           });
         }
+        const isolatedAccount =
+          piEnvironment !== undefined ||
+          (input.providerInstanceId !== undefined && input.providerInstanceId !== PROVIDER);
+        let extensionMode: { readonly noExtensions: boolean };
+        try {
+          extensionMode = resolvePiExtensionMode({
+            isolatedAccount,
+            hasExtensionEnabledDefault: [...sessions.values()].some(
+              (context) => context.extensionsEnabled,
+            ),
+            hasIsolatedMode: [...sessions.values()].some((context) => !context.extensionsEnabled),
+          });
+        } catch (cause) {
+          return yield* new ProviderAdapterRequestError({
+            provider: PROVIDER,
+            method: "session/start",
+            detail: cause instanceof Error ? cause.message : String(cause),
+            cause,
+          });
+        }
+        const noExtensions = extensionMode.noExtensions;
+        if (isolatedAccount) {
+          resetApiProviders();
+          resetOAuthProviders();
+        }
         const { runtime, modelRegistry } = yield* Effect.tryPromise({
           try: () => {
             const storagePaths = makePiStoragePaths({
@@ -2214,6 +2303,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
                 : {}),
               ...(piEnvironment !== undefined ? { environment: piEnvironment } : {}),
               sessionManager,
+              ...(noExtensions ? { noExtensions: true } : {}),
               ...(modelId ? { modelId } : {}),
               ...(thinkingLevel ? { thinkingLevel } : {}),
             });
@@ -2257,6 +2347,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
           stopped: false,
           lastKnownTokenUsage: undefined,
           unsubscribe: undefined,
+          extensionsEnabled: !noExtensions,
         };
         context.unsubscribe = runtime.session.subscribe((event) =>
           handleSessionEvent(context, event),
@@ -2682,6 +2773,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
     const listModels: NonNullable<PiAdapterShape["listModels"]> = (input) =>
       Effect.tryPromise({
         try: async () => {
+          const noExtensions = preparePiDiscoveryMode(input.environment, input.instanceId);
           const piSdk = await loadPiCodingAgentModule();
           const { agentDir } = makePiStoragePaths({
             agentDir: input.agentDir,
@@ -2704,6 +2796,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
             agentDir,
             authStorage,
             modelRegistry: registry,
+            ...(noExtensions ? { resourceLoaderOptions: { noExtensions: true } } : {}),
           });
           const extensionCount = services.resourceLoader.getExtensions().extensions.length;
           const models = services.modelRegistry.getAvailable().map((model) => {
@@ -2747,11 +2840,20 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
     const listSkills: NonNullable<PiAdapterShape["listSkills"]> = (input) =>
       Effect.tryPromise({
         try: async () => {
+          const noExtensions = preparePiDiscoveryMode(input.environment, input.instanceId);
           const active = input.threadId
             ? sessions.get(ThreadId.makeUnsafe(input.threadId))
             : undefined;
           const loader = active?.runtime.session.resourceLoader;
           if (active && input.forceReload) {
+            if (
+              shouldDisableExtensions(input.environment, input.instanceId) &&
+              active.extensionsEnabled
+            ) {
+              throw new Error(
+                "Extension reload is disabled while an isolated Pi account is active.",
+              );
+            }
             await active.runtime.session.reload();
           }
           let services:
@@ -2779,6 +2881,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
               agentDir,
               authStorage,
               modelRegistry: registry,
+              ...(noExtensions ? { resourceLoaderOptions: { noExtensions: true } } : {}),
             });
           }
           if (services && input.forceReload) {
@@ -2817,6 +2920,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
     const listCommands: NonNullable<PiAdapterShape["listCommands"]> = (input) =>
       Effect.tryPromise({
         try: async () => {
+          const noExtensions = preparePiDiscoveryMode(input.environment, input.instanceId);
           const active = input.threadId
             ? sessions.get(ThreadId.makeUnsafe(input.threadId))
             : undefined;
@@ -2870,6 +2974,7 @@ const makePiAdapter = (options?: PiAdapterLiveOptions) =>
             agentDir,
             authStorage,
             modelRegistry: registry,
+            ...(noExtensions ? { resourceLoaderOptions: { noExtensions: true } } : {}),
           });
           if (input.forceReload) {
             await services.resourceLoader.reload();

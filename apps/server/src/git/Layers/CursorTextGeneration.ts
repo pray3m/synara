@@ -90,20 +90,20 @@ function cursorModelOptionsFromSelection(
   return Object.keys(options).length > 0 ? options : undefined;
 }
 
-function resolveCursorSettings(
+export function resolveCursorSettings(
   providerOptions: ProviderStartOptions | undefined,
   serverConfig: { readonly homeDir: string; readonly stateDir: string },
   instanceId?: string,
 ): CursorAcpRuntimeCursorSettings | undefined {
   const cursorOptions = providerOptions?.cursor;
-  if (!cursorOptions) return undefined;
+  if (!cursorOptions && instanceId === undefined) return undefined;
   return {
     homeDir: serverConfig.homeDir,
     isolationRootDir: serverConfig.stateDir,
     ...(instanceId !== undefined ? { instanceId } : {}),
-    ...(cursorOptions.binaryPath ? { binaryPath: cursorOptions.binaryPath } : {}),
-    ...(cursorOptions.apiEndpoint ? { apiEndpoint: cursorOptions.apiEndpoint } : {}),
-    ...(cursorOptions.environment !== undefined ? { environment: cursorOptions.environment } : {}),
+    ...(cursorOptions?.binaryPath ? { binaryPath: cursorOptions.binaryPath } : {}),
+    ...(cursorOptions?.apiEndpoint ? { apiEndpoint: cursorOptions.apiEndpoint } : {}),
+    ...(cursorOptions?.environment !== undefined ? { environment: cursorOptions.environment } : {}),
   };
 }
 

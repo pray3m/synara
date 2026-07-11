@@ -261,7 +261,11 @@ const makeAcpSessionRuntime = (
         ),
       );
 
-    const env = buildAcpSpawnProcessEnv(options.spawn);
+    const env = yield* Effect.try({
+      try: () => buildAcpSpawnProcessEnv(options.spawn),
+      catch: (cause) =>
+        new EffectAcpErrors.AcpSpawnError({ command: options.spawn.command, cause }),
+    });
     const prepared = prepareWindowsSafeProcess(options.spawn.command, options.spawn.args, {
       cwd: options.spawn.cwd,
       env,

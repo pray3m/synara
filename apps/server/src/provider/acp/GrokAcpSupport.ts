@@ -113,12 +113,16 @@ export const resolveGrokAcpAuthMethodIdForEnv =
   ): Effect.Effect<string, EffectAcpErrors.AcpError> =>
     Effect.gen(function* () {
       const authMethodIds = availableAuthMethodIds(initializeResult);
-      const effectiveEnv = buildProviderProcessEnv({
-        driver: "grok",
-        ...(environment !== undefined ? { environment } : {}),
-        ...(instanceId !== undefined ? { instanceId } : {}),
-        ...(homeDir !== undefined ? { homeDir } : {}),
-        ...(isolationRootDir !== undefined ? { isolationRootDir } : {}),
+      const effectiveEnv = yield* Effect.try({
+        try: () =>
+          buildProviderProcessEnv({
+            driver: "grok",
+            ...(environment !== undefined ? { environment } : {}),
+            ...(instanceId !== undefined ? { instanceId } : {}),
+            ...(homeDir !== undefined ? { homeDir } : {}),
+            ...(isolationRootDir !== undefined ? { isolationRootDir } : {}),
+          }),
+        catch: (cause) => new EffectAcpErrorsRuntime.AcpSpawnError({ command: "grok", cause }),
       });
       if (hasGrokApiKeyEnv(effectiveEnv) && authMethodIds.has(GROK_API_KEY_AUTH_METHOD_ID)) {
         return GROK_API_KEY_AUTH_METHOD_ID;
