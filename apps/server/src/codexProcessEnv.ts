@@ -5,11 +5,15 @@
 // Depends on: Codex home path helpers, shared Codex config parsing, login-shell env reader.
 
 import {
+  closeSync,
+  constants,
   copyFileSync,
   existsSync,
+  fstatSync,
   lstatSync,
   linkSync,
   mkdirSync,
+  openSync,
   realpathSync,
   readdirSync,
   readFileSync,
@@ -176,7 +180,7 @@ export interface CodexAuthTracking {
   readonly effectiveAuthFilePath?: string;
 }
 
-export type CodexPreparedAuthSource =
+export type CodexPreparedHomeSource =
   | { readonly kind: "missing" }
   | {
       readonly kind: "bound";
@@ -185,7 +189,37 @@ export type CodexPreparedAuthSource =
       readonly inode: bigint;
     };
 
+export type CodexPreparedAuthSource = CodexPreparedHomeSource;
+
+export type CodexPreparedHomeFileSnapshotFailure =
+  | "home-changed"
+  | "home-unavailable"
+  | "file-check-failed"
+  | "symbolic-link"
+  | "not-regular-file"
+  | "file-changed"
+  | "file-read-failed";
+
+export class CodexPreparedHomeFileSnapshotError extends Error {
+  readonly failure: CodexPreparedHomeFileSnapshotFailure;
+  readonly fileName: string;
+
+  constructor(
+    failure: CodexPreparedHomeFileSnapshotFailure,
+    fileName: string,
+    message: string,
+    options?: ErrorOptions,
+  ) {
+    super(message, options);
+    this.name = "CodexPreparedHomeFileSnapshotError";
+    this.failure = failure;
+    this.fileName = fileName;
+  }
+}
+
 export interface PreparedCodexAuthTracking extends CodexAuthTracking {
+  /** Stable config bytes captured from the same source-home identity selected for this request. */
+  readonly sourceConfigSnapshot: string;
   /** The exact directory identity auxiliary generation is allowed to read. */
   readonly authSource: CodexPreparedAuthSource;
 }
@@ -1069,9 +1103,12 @@ function uniqueResolvedPaths(paths: readonly string[]): string[] {
 function resolveCodexAuthTrackingFromResolution(
   resolution: CodexOverlayResolution,
   accountId?: string,
+  preparedSourceConfig?: string,
 ): CodexAuthTracking {
   const sourceConfigPath = path.join(resolution.sourceHomePath, "config.toml");
-  const sourceConfig = existsSync(sourceConfigPath) ? readFileSync(sourceConfigPath, "utf8") : "";
+  const sourceConfig =
+    preparedSourceConfig ??
+    (existsSync(sourceConfigPath) ? readFileSync(sourceConfigPath, "utf8") : "");
   assertManagedCodexHomeUsesObservableAuth({
     sourceConfig,
     ...(accountId ? { accountId } : {}),
@@ -1555,32 +1592,35 @@ function filesystemErrorCode(cause: unknown): string | undefined {
     : undefined;
 }
 
-function bindCodexPreparedAuthSource(
-  authoritativeAuthHomePath: string,
-  requireRealDirectory: boolean,
-): CodexPreparedAuthSource {
+function bindCodexPreparedHomeSource(
+  homePath: string,
+  options: {
+    readonly label: string;
+    readonly requireRealDirectory: boolean;
+  },
+): CodexPreparedHomeSource {
   let initialLogicalStat: BigIntStats;
   try {
-    initialLogicalStat = lstatSync(authoritativeAuthHomePath, { bigint: true });
+    initialLogicalStat = lstatSync(homePath, { bigint: true });
   } catch (cause) {
     if (filesystemErrorCode(cause) === "ENOENT") return { kind: "missing" };
     throw cause;
   }
 
-  if (requireRealDirectory && initialLogicalStat.isSymbolicLink()) {
+  if (options.requireRealDirectory && initialLogicalStat.isSymbolicLink()) {
     throw new Error(
-      `Codex account auth home at ${authoritativeAuthHomePath} is a symlink; it must remain bound to one account directory.`,
+      `${options.label} at ${homePath} is a symlink; it must remain bound to one account directory.`,
     );
   }
   if (!initialLogicalStat.isDirectory() && !initialLogicalStat.isSymbolicLink()) {
-    throw new Error(`Codex account auth home at ${authoritativeAuthHomePath} is not a directory.`);
+    throw new Error(`${options.label} at ${homePath} is not a directory.`);
   }
 
   try {
-    const canonicalHomePath = realpathSync(authoritativeAuthHomePath);
+    const canonicalHomePath = realpathSync(homePath);
     const canonicalStat = lstatSync(canonicalHomePath, { bigint: true });
-    const finalLogicalStat = lstatSync(authoritativeAuthHomePath, { bigint: true });
-    const finalTargetStat = statSync(authoritativeAuthHomePath, { bigint: true });
+    const finalLogicalStat = lstatSync(homePath, { bigint: true });
+    const finalTargetStat = statSync(homePath, { bigint: true });
     const logicalEntryIsStable =
       initialLogicalStat.dev === finalLogicalStat.dev &&
       initialLogicalStat.ino === finalLogicalStat.ino &&
@@ -1592,7 +1632,7 @@ function bindCodexPreparedAuthSource(
       canonicalStat.ino === finalTargetStat.ino;
     if (!logicalEntryIsStable || !canonicalDirectoryIsStable) {
       throw new Error(
-        `Codex account auth home at ${authoritativeAuthHomePath} changed while its identity was being bound; retry the request.`,
+        `${options.label} at ${homePath} changed while its identity was being bound; retry the request.`,
       );
     }
     return {
@@ -1603,10 +1643,137 @@ function bindCodexPreparedAuthSource(
     };
   } catch (cause) {
     if (cause instanceof Error && /changed while its identity/.test(cause.message)) throw cause;
-    throw new Error(
-      `Codex account auth home at ${authoritativeAuthHomePath} could not be bound safely.`,
+    throw new Error(`${options.label} at ${homePath} could not be bound safely.`, { cause });
+  }
+}
+
+function preparedHomeFileIdentityMatches(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs
+  );
+}
+
+function assertPreparedHomeIdentity(
+  source: Extract<CodexPreparedHomeSource, { kind: "bound" }>,
+  fileName: string,
+): void {
+  try {
+    const current = lstatSync(source.canonicalHomePath, { bigint: true });
+    if (
+      !current.isDirectory() ||
+      current.isSymbolicLink() ||
+      current.dev !== source.device ||
+      current.ino !== source.inode
+    ) {
+      throw new CodexPreparedHomeFileSnapshotError(
+        "home-changed",
+        fileName,
+        "The selected Codex home changed after its identity was bound; retry the request.",
+      );
+    }
+  } catch (cause) {
+    if (cause instanceof CodexPreparedHomeFileSnapshotError) throw cause;
+    throw new CodexPreparedHomeFileSnapshotError(
+      "home-unavailable",
+      fileName,
+      "The selected Codex home can no longer be verified safely; retry the request.",
       { cause },
     );
+  }
+}
+
+/**
+ * Reads one regular file from an already-bound Codex home without following a
+ * mutable logical home path. Directory and file identities are checked before
+ * and after the descriptor read so symlink, FIFO, and type-swap races fail
+ * closed instead of mixing config or credentials from different accounts.
+ */
+export function readCodexPreparedHomeFileSnapshot(
+  source: CodexPreparedHomeSource,
+  fileName: string,
+): Buffer | undefined {
+  if (source.kind === "missing") return undefined;
+  if (path.basename(fileName) !== fileName || fileName === "." || fileName === "..") {
+    throw new CodexPreparedHomeFileSnapshotError(
+      "file-check-failed",
+      fileName,
+      "A prepared Codex home snapshot must name one direct child file.",
+    );
+  }
+
+  assertPreparedHomeIdentity(source, fileName);
+  const filePath = path.join(source.canonicalHomePath, fileName);
+  let initial: BigIntStats;
+  try {
+    initial = lstatSync(filePath, { bigint: true });
+  } catch (cause) {
+    assertPreparedHomeIdentity(source, fileName);
+    if (filesystemErrorCode(cause) === "ENOENT") return undefined;
+    throw new CodexPreparedHomeFileSnapshotError(
+      "file-check-failed",
+      fileName,
+      `Codex ${fileName} could not be checked safely.`,
+      { cause },
+    );
+  }
+  if (initial.isSymbolicLink()) {
+    throw new CodexPreparedHomeFileSnapshotError(
+      "symbolic-link",
+      fileName,
+      `Codex ${fileName} must not be a symbolic link.`,
+    );
+  }
+  if (!initial.isFile()) {
+    throw new CodexPreparedHomeFileSnapshotError(
+      "not-regular-file",
+      fileName,
+      `Codex ${fileName} must be a regular file.`,
+    );
+  }
+
+  let descriptor: number | undefined;
+  try {
+    descriptor = openSync(
+      filePath,
+      constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK,
+    );
+    const before = fstatSync(descriptor, { bigint: true });
+    if (!before.isFile() || !preparedHomeFileIdentityMatches(initial, before)) {
+      throw new CodexPreparedHomeFileSnapshotError(
+        "file-changed",
+        fileName,
+        `Codex ${fileName} changed while its identity was being verified; retry the request.`,
+      );
+    }
+    const content = readFileSync(descriptor);
+    const after = fstatSync(descriptor, { bigint: true });
+    if (
+      !preparedHomeFileIdentityMatches(before, after) ||
+      BigInt(content.byteLength) !== after.size
+    ) {
+      throw new CodexPreparedHomeFileSnapshotError(
+        "file-changed",
+        fileName,
+        `Codex ${fileName} changed while its snapshot was being read; retry the request.`,
+      );
+    }
+    assertPreparedHomeIdentity(source, fileName);
+    return content;
+  } catch (cause) {
+    if (cause instanceof CodexPreparedHomeFileSnapshotError) throw cause;
+    throw new CodexPreparedHomeFileSnapshotError(
+      "file-read-failed",
+      fileName,
+      `Codex ${fileName} could not be snapshotted safely.`,
+      { cause },
+    );
+  } finally {
+    if (descriptor !== undefined) closeSync(descriptor);
   }
 }
 
@@ -1849,6 +2016,12 @@ export function prepareCodexAuthTracking(
     ...(input.shadowHomePath ? { shadowHomePath: input.shadowHomePath } : {}),
     ...(input.accountId ? { accountId: input.accountId } : {}),
   });
+  const sourceHomeSource = bindCodexPreparedHomeSource(resolution.sourceHomePath, {
+    label: "Codex source home",
+    requireRealDirectory: false,
+  });
+  const sourceConfigSnapshot =
+    readCodexPreparedHomeFileSnapshot(sourceHomeSource, "config.toml")?.toString("utf8") ?? "";
   if (resolution.shadowHomePath) {
     validateCodexShadowHomePath(resolution.sourceHomePath, resolution.shadowHomePath);
     lstatShadowPrivateState(resolution.shadowHomePath, "auth.json");
@@ -1865,16 +2038,26 @@ export function prepareCodexAuthTracking(
     );
     lstatShadowPrivateState(resolution.overlayHomePath, "auth.json");
   }
-  const tracking = resolveCodexAuthTrackingFromResolution(resolution, input.accountId);
+  const tracking = resolveCodexAuthTrackingFromResolution(
+    resolution,
+    input.accountId,
+    sourceConfigSnapshot,
+  );
   const requiresRealPrivateHome = Boolean(
     resolution.shadowHomePath || (resolution.accountSegment && !resolution.hasDedicatedAccountHome),
   );
+  const authoritativeAuthHomePath = path.dirname(tracking.authoritativeAuthFilePath);
+  const sourceHomeAlsoOwnsAuth =
+    path.resolve(authoritativeAuthHomePath) === path.resolve(resolution.sourceHomePath);
   return {
     ...tracking,
-    authSource: bindCodexPreparedAuthSource(
-      path.dirname(tracking.authoritativeAuthFilePath),
-      requiresRealPrivateHome,
-    ),
+    sourceConfigSnapshot,
+    authSource: sourceHomeAlsoOwnsAuth
+      ? sourceHomeSource
+      : bindCodexPreparedHomeSource(authoritativeAuthHomePath, {
+          label: "Codex account auth home",
+          requireRealDirectory: requiresRealPrivateHome,
+        }),
   };
 }
 
