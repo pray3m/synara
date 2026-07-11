@@ -71,6 +71,30 @@ export interface CodexOverlayEntryLinker {
   readonly copyFile: typeof copyFileSync;
 }
 
+export interface CodexOverlayConfigPublicationHooks {
+  /** Deterministic test seam. Production callers must omit this hook. */
+  readonly beforeRename?: (temporaryPath: string, targetPath: string) => void;
+}
+
+export function writeCodexOverlayConfigAtomically(
+  targetPath: string,
+  contents: string,
+  hooks: CodexOverlayConfigPublicationHooks = {},
+): void {
+  const temporaryPath = `${targetPath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    writeFileSync(temporaryPath, contents, {
+      encoding: "utf8",
+      flag: "wx",
+      mode: 0o600,
+    });
+    hooks.beforeRename?.(temporaryPath, targetPath);
+    renameSync(temporaryPath, targetPath);
+  } finally {
+    rmSync(temporaryPath, { force: true });
+  }
+}
+
 export function resolveCodexBrowserUsePipePath(
   input: {
     readonly env?: NodeJS.ProcessEnv;
@@ -1994,10 +2018,9 @@ function prepareSynaraCodexHomeOverlay(input: {
       ...readSynaraConfigSuppressions(suppressionMarkerPath),
     ]),
   ].slice(0, MAX_CONFIG_SUPPRESSION_SECTIONS);
-  writeFileSync(
+  writeCodexOverlayConfigAtomically(
     path.join(overlayHomePath, "config.toml"),
     disableCodexConfigSections(sourceConfig, suppressedSections, true),
-    "utf8",
   );
   writeSynaraConfigSuppressions(suppressionMarkerPath, suppressedSections);
   assertSharedCodexContinuationGenerationPrepared(sourceHomePath, continuationMetadata.generation);

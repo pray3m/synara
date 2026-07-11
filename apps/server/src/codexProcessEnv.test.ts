@@ -37,6 +37,7 @@ import {
   readCodexAuthTrackingFingerprint,
   readEffectiveCodexAuthCredentialsStoreMode,
   resolveCodexAuthTracking,
+  writeCodexOverlayConfigAtomically,
 } from "./codexProcessEnv.ts";
 import { resolveActiveCodexHomeWritePath } from "./codexHomePaths.ts";
 import { resolveCodexPathIdentity } from "./codexPathIdentity.ts";
@@ -74,6 +75,42 @@ describe("hydrateCodexProviderCredentialEnvironment", () => {
 
     expect(hydrated.AZURE_OPENAI_API_KEY).toBe("inherited-key");
     expect(readEnvironment).not.toHaveBeenCalled();
+  });
+});
+
+describe("writeCodexOverlayConfigAtomically", () => {
+  it("keeps the old complete config when publication is interrupted", () => {
+    const root = mkdtempSync(path.join(OS.tmpdir(), "synara-codex-config-publish-"));
+    const targetPath = path.join(root, "config.toml");
+    writeFileSync(targetPath, 'model = "old"\n', "utf8");
+    let temporaryPath: string | undefined;
+
+    try {
+      expect(() =>
+        writeCodexOverlayConfigAtomically(targetPath, 'model = "new"\n', {
+          beforeRename: (candidatePath) => {
+            temporaryPath = candidatePath;
+            expect(readFileSync(targetPath, "utf8")).toBe('model = "old"\n');
+            expect(readFileSync(candidatePath, "utf8")).toBe('model = "new"\n');
+            throw new Error("simulated publication interruption");
+          },
+        }),
+      ).toThrow("simulated publication interruption");
+
+      expect(readFileSync(targetPath, "utf8")).toBe('model = "old"\n');
+      if (!temporaryPath) {
+        throw new Error("Expected atomic publication to create a temporary config path.");
+      }
+      expect(existsSync(temporaryPath)).toBe(false);
+
+      writeCodexOverlayConfigAtomically(targetPath, 'model = "new"\n');
+
+      expect(readFileSync(targetPath, "utf8")).toBe('model = "new"\n');
+      expect(lstatSync(targetPath).mode & 0o777).toBe(0o600);
+      expect(readdirSync(root)).toEqual(["config.toml"]);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
