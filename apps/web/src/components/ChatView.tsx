@@ -90,6 +90,7 @@ import {
 } from "~/lib/providerDiscoveryReactQuery";
 import { projectSearchEntriesQueryOptions } from "~/lib/projectReactQuery";
 import { serverConfigQueryOptions, serverQueryKeys } from "~/lib/serverReactQuery";
+import { waitForCheckpointFileRestore } from "~/lib/checkpointFileRestore";
 import { useRefreshProviderStatusesNow } from "~/hooks/useProviderStatusRefresh";
 import { SINGLE_CHAT_PANE_SCOPE_ID } from "~/lib/chatPaneScope";
 import {
@@ -6257,32 +6258,16 @@ export default function ChatView({
       setIsRevertingCheckpoint(true);
       setThreadError(activeThread.id, null);
       const commandId = newCommandId();
-      let stopWaitingForCompletion: (() => void) | undefined;
+      let cancelCompletionWait: (() => void) | undefined;
       try {
         const completion =
           scope === "files"
-            ? new Promise<void>((resolve, reject) => {
-                const timeoutId = window.setTimeout(() => {
-                  unsubscribe();
-                  reject(new Error("Timed out waiting for file changes to be restored."));
-                }, 120_000);
-                const unsubscribe = api.orchestration.onDomainEvent((event) => {
-                  if (
-                    event.type !== "thread.checkpoint-files-restored" ||
-                    event.payload.requestCommandId !== commandId
-                  ) {
-                    return;
-                  }
-                  window.clearTimeout(timeoutId);
-                  unsubscribe();
-                  resolve();
-                });
-                stopWaitingForCompletion = () => {
-                  window.clearTimeout(timeoutId);
-                  unsubscribe();
-                };
+            ? waitForCheckpointFileRestore({
+                requestCommandId: commandId,
+                subscribe: api.orchestration.onDomainEvent,
               })
             : null;
+        cancelCompletionWait = completion?.cancel;
         await api.orchestration.dispatchCommand(
           scope === "files"
             ? {
@@ -6301,14 +6286,14 @@ export default function ChatView({
                 createdAt: new Date().toISOString(),
               },
         );
-        await completion;
+        await completion?.promise;
       } catch (err) {
         setThreadError(
           activeThread.id,
           err instanceof Error ? err.message : "Failed to revert thread state.",
         );
       }
-      stopWaitingForCompletion?.();
+      cancelCompletionWait?.();
       setIsRevertingCheckpoint(false);
     },
     [activeThread, hasLiveTurn, isConnecting, isRevertingCheckpoint, isSendBusy, setThreadError],

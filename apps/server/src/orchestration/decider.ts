@@ -1677,6 +1677,26 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.checkpoint.files.restore.fail": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.checkpoint-files-restore-failed",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          turnCount: command.turnCount,
+          requestCommandId: command.requestCommandId,
+          detail: command.detail,
+        },
+      };
+    }
+
     case "thread.conversation.rollback.complete": {
       yield* requireThread({
         readModel,

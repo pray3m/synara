@@ -1337,6 +1337,17 @@ const ThreadCheckpointFilesRestoreCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadCheckpointFilesRestoreFailCommand = Schema.Struct({
+  type: Schema.Literal("thread.checkpoint.files.restore.fail"),
+  commandId: CommandId,
+  requestCommandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnCount: NonNegativeInt,
+  detail: TrimmedNonEmptyString,
+  createdAt: IsoDateTime,
+});
+
 const ThreadConversationRollbackCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.conversation.rollback.complete"),
   commandId: CommandId,
@@ -1358,6 +1369,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
   ThreadCheckpointFilesRestoreCompleteCommand,
+  ThreadCheckpointFilesRestoreFailCommand,
   ThreadConversationRollbackCommand,
   ThreadConversationRollbackCompleteCommand,
   ThreadDispatchQueuedTurnCommand,
@@ -1399,6 +1411,7 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.checkpoint-revert-requested",
   "thread.checkpoint-files-restore-requested",
   "thread.checkpoint-files-restored",
+  "thread.checkpoint-files-restore-failed",
   "thread.reverted",
   "thread.conversation-rollback-requested",
   "thread.conversation-rolled-back",
@@ -1677,6 +1690,14 @@ export const ThreadCheckpointFilesRestoredPayload = Schema.Struct({
   requestCommandId: CommandId,
 });
 
+export const ThreadCheckpointFilesRestoreFailedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnCount: NonNegativeInt,
+  requestCommandId: CommandId,
+  detail: TrimmedNonEmptyString,
+});
+
 export const ThreadRevertedPayload = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
@@ -1898,6 +1919,11 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.checkpoint-files-restored"),
     payload: ThreadCheckpointFilesRestoredPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.checkpoint-files-restore-failed"),
+    payload: ThreadCheckpointFilesRestoreFailedPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

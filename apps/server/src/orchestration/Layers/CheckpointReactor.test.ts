@@ -263,6 +263,7 @@ describe("CheckpointReactor", () => {
     readonly threadWorktreePath?: string | null;
     readonly providerSessionCwd?: string;
     readonly providerName?: ProviderKind;
+    readonly startReactor?: boolean;
   }) {
     const cwd = createGitRepository();
     tempDirs.push(cwd);
@@ -299,7 +300,10 @@ describe("CheckpointReactor", () => {
     const reactor = await runtime.runPromise(Effect.service(CheckpointReactor));
     const checkpointStore = await runtime.runPromise(Effect.service(CheckpointStore));
     scope = await Effect.runPromise(Scope.make("sequential"));
-    await Effect.runPromise(reactor.start.pipe(Scope.provide(scope)));
+    const startReactor = () => Effect.runPromise(reactor.start.pipe(Scope.provide(scope!)));
+    if (options?.startReactor ?? true) {
+      await startReactor();
+    }
     const drain = () => Effect.runPromise(reactor.drain);
 
     const createdAt = new Date().toISOString();
@@ -364,6 +368,7 @@ describe("CheckpointReactor", () => {
       provider,
       cwd,
       drain,
+      startReactor,
     };
   }
 
@@ -1763,5 +1768,74 @@ describe("CheckpointReactor", () => {
       true,
     );
     expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+  });
+
+  it("emits a correlated failure when file restore has no active session", async () => {
+    const harness = await createHarness({ hasSession: false });
+    const createdAt = new Date().toISOString();
+    const requestCommandId = CommandId.makeUnsafe("cmd-files-restore-no-session");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.files.restore",
+        commandId: requestCommandId,
+        threadId: ThreadId.makeUnsafe("thread-1"),
+        messageId: MessageId.makeUnsafe("message-files-restore-no-session"),
+        turnCount: 0,
+        createdAt,
+      }),
+    );
+
+    const events = await waitForEvent(
+      harness.engine,
+      (event) =>
+        event.type === "thread.checkpoint-files-restore-failed" &&
+        event.payload.requestCommandId === requestCommandId,
+    );
+    const failure = events.find((event) => event.type === "thread.checkpoint-files-restore-failed");
+    expect(failure?.payload.detail).toContain("No active provider session");
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+  });
+
+  it("does not replay an ambiguous persisted file restore when the reactor starts", async () => {
+    const harness = await createHarness({ startReactor: false });
+    const createdAt = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const messageId = MessageId.makeUnsafe("message-persisted-restore");
+    runGit(harness.cwd, [
+      "update-ref",
+      checkpointRefForThreadMessageStart(threadId, messageId),
+      "HEAD",
+    ]);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "newer unconfirmed work\n", "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.files.restore",
+        commandId: CommandId.makeUnsafe("cmd-persisted-files-restore"),
+        threadId,
+        messageId,
+        turnCount: 0,
+        createdAt,
+      }),
+    );
+    await harness.startReactor();
+    await harness.drain();
+
+    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe(
+      "newer unconfirmed work\n",
+    );
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    expect(
+      events.some(
+        (event) =>
+          event.type === "thread.checkpoint-files-restored" ||
+          event.type === "thread.checkpoint-files-restore-failed",
+      ),
+    ).toBe(false);
   });
 });

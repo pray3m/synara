@@ -179,24 +179,42 @@ const make = Effect.gen(function* () {
     readonly turnCount: number;
     readonly detail: string;
     readonly createdAt: string;
+    readonly filesRestore?: {
+      readonly requestCommandId: CommandId;
+      readonly messageId: MessageId;
+    };
   }) =>
-    orchestrationEngine.dispatch({
-      type: "thread.activity.append",
-      commandId: serverCommandId("checkpoint-revert-failure"),
-      threadId: input.threadId,
-      activity: {
-        id: EventId.makeUnsafe(crypto.randomUUID()),
-        tone: "error",
-        kind: "checkpoint.revert.failed",
-        summary: "Checkpoint revert failed",
-        payload: {
+    Effect.gen(function* () {
+      yield* orchestrationEngine.dispatch({
+        type: "thread.activity.append",
+        commandId: serverCommandId("checkpoint-revert-failure"),
+        threadId: input.threadId,
+        activity: {
+          id: EventId.makeUnsafe(crypto.randomUUID()),
+          tone: "error",
+          kind: "checkpoint.revert.failed",
+          summary: "Checkpoint revert failed",
+          payload: {
+            turnCount: input.turnCount,
+            detail: input.detail,
+          },
+          turnId: null,
+          createdAt: input.createdAt,
+        },
+        createdAt: input.createdAt,
+      });
+      if (input.filesRestore) {
+        yield* orchestrationEngine.dispatch({
+          type: "thread.checkpoint.files.restore.fail",
+          commandId: serverCommandId("checkpoint-files-restore-failed"),
+          requestCommandId: input.filesRestore.requestCommandId,
+          threadId: input.threadId,
+          messageId: input.filesRestore.messageId,
           turnCount: input.turnCount,
           detail: input.detail,
-        },
-        turnId: null,
-        createdAt: input.createdAt,
-      },
-      createdAt: input.createdAt,
+          createdAt: input.createdAt,
+        });
+      }
     });
 
   const appendCaptureFailureActivity = (input: {
@@ -846,6 +864,11 @@ const make = Effect.gen(function* () {
     >,
   ) {
     const now = new Date().toISOString();
+    const filesOnly = event.type === "thread.checkpoint-files-restore-requested";
+    const filesRestore =
+      filesOnly && event.commandId !== null
+        ? { requestCommandId: event.commandId, messageId: event.payload.messageId }
+        : undefined;
 
     const thread = yield* getThreadDetail(event.payload.threadId);
     if (!thread) {
@@ -854,6 +877,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: "Thread was not found in projection state.",
         createdAt: now,
+        ...(filesRestore ? { filesRestore } : {}),
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
@@ -865,6 +889,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: "No active provider session with workspace cwd is bound to this thread.",
         createdAt: now,
+        ...(filesRestore ? { filesRestore } : {}),
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
@@ -874,6 +899,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: "Checkpoints are unavailable because this project is not a git repository.",
         createdAt: now,
+        ...(filesRestore ? { filesRestore } : {}),
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
@@ -889,6 +915,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: `Checkpoint turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
         createdAt: now,
+        ...(filesRestore ? { filesRestore } : {}),
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
@@ -903,7 +930,6 @@ const make = Effect.gen(function* () {
         ),
       )
       .find((checkpointRef) => checkpointRef !== null);
-    const filesOnly = event.type === "thread.checkpoint-files-restore-requested";
     const targetCheckpointRef = filesOnly
       ? checkpointRefForThreadMessageStart(event.payload.threadId, event.payload.messageId)
       : event.payload.turnCount === 0
@@ -918,6 +944,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: `Checkpoint ref for turn ${event.payload.turnCount} is unavailable in read model.`,
         createdAt: now,
+        ...(filesRestore ? { filesRestore } : {}),
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
@@ -933,6 +960,7 @@ const make = Effect.gen(function* () {
         turnCount: event.payload.turnCount,
         detail: `Filesystem checkpoint is unavailable for turn ${event.payload.turnCount}.`,
         createdAt: now,
+        ...(filesRestore ? { filesRestore } : {}),
       }).pipe(Effect.catch(() => Effect.void));
       return;
     }
@@ -1022,6 +1050,15 @@ const make = Effect.gen(function* () {
             turnCount: event.payload.turnCount,
             detail: error.message,
             createdAt: new Date().toISOString(),
+            ...(event.type === "thread.checkpoint-files-restore-requested" &&
+            event.commandId !== null
+              ? {
+                  filesRestore: {
+                    requestCommandId: event.commandId,
+                    messageId: event.payload.messageId,
+                  },
+                }
+              : {}),
           }),
         ),
       );
@@ -1088,17 +1125,6 @@ const make = Effect.gen(function* () {
     );
 
   const worker = yield* makeDrainableWorker(processInputSafely);
-  const observedFileRestoreRequestIds = new Set<string>();
-
-  const enqueueDomainEvent = (event: OrchestrationEvent) => {
-    if (event.type === "thread.checkpoint-files-restore-requested") {
-      if (event.commandId === null || observedFileRestoreRequestIds.has(event.commandId)) {
-        return Effect.void;
-      }
-      observedFileRestoreRequestIds.add(event.commandId);
-    }
-    return worker.enqueue({ source: "domain" as const, event });
-  };
 
   const start: CheckpointReactorShape["start"] = Effect.gen(function* () {
     yield* Effect.forkScoped(
@@ -1112,30 +1138,8 @@ const make = Effect.gen(function* () {
         ) {
           return Effect.void;
         }
-        return enqueueDomainEvent(event);
+        return worker.enqueue({ source: "domain", event });
       }),
-    );
-
-    // Reconcile accepted file-restore commands that were persisted before a
-    // server crash but never reached their durable completion event. Restore
-    // is idempotent, including the ambiguous crash-after-git-before-complete case.
-    const persistedEvents = yield* Stream.runCollect(orchestrationEngine.readEvents(0)).pipe(
-      Effect.orDie,
-    );
-    const completedRequestIds = new Set(
-      Array.from(persistedEvents)
-        .filter((event) => event.type === "thread.checkpoint-files-restored")
-        .map((event) => event.payload.requestCommandId),
-    );
-    yield* Effect.forEach(
-      Array.from(persistedEvents),
-      (event) =>
-        event.type === "thread.checkpoint-files-restore-requested" &&
-        event.commandId !== null &&
-        !completedRequestIds.has(event.commandId)
-          ? enqueueDomainEvent(event)
-          : Effect.void,
-      { concurrency: 1, discard: true },
     );
 
     yield* Effect.forkScoped(
