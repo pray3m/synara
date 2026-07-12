@@ -54,7 +54,6 @@ export interface ReverseCheckpointDiffInput {
   readonly cwd: string;
   readonly fromCheckpointRef: CheckpointRef;
   readonly toCheckpointRef: CheckpointRef;
-  readonly fallbackFromToHead?: boolean;
   readonly maxOutputBytes?: number;
 }
 

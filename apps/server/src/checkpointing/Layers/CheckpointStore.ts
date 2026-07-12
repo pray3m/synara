@@ -366,12 +366,9 @@ const makeCheckpointStore = Effect.gen(function* () {
   const reverseCheckpointDiff: CheckpointStoreShape["reverseCheckpointDiff"] = (input) =>
     Effect.gen(function* () {
       const operation = "CheckpointStore.reverseCheckpointDiff";
-      let fromCommitOid = yield* resolveCheckpointCommit(input.cwd, input.fromCheckpointRef);
+      const fromCommitOid = yield* resolveCheckpointCommit(input.cwd, input.fromCheckpointRef);
       const toCommitOid = yield* resolveCheckpointCommit(input.cwd, input.toCheckpointRef);
 
-      if (!fromCommitOid && input.fallbackFromToHead === true) {
-        fromCommitOid = yield* resolveHeadCommit(input.cwd);
-      }
       if (!fromCommitOid || !toCommitOid) {
         return false;
       }

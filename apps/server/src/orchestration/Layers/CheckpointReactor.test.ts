@@ -1638,6 +1638,57 @@ describe("CheckpointReactor", () => {
     expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
   });
 
+  it("does not undo files when the exact turn baseline is missing", async () => {
+    const harness = await createHarness({ seedFilesystemCheckpoints: false });
+    const createdAt = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const turnId = asTurnId("turn-missing-baseline");
+
+    fs.writeFileSync(path.join(harness.cwd, "turn.txt"), "turn\n", "utf8");
+    await runtime!.runPromise(
+      harness.checkpointStore.captureCheckpoint({
+        cwd: harness.cwd,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+      }),
+    );
+    fs.writeFileSync(path.join(harness.cwd, "later.txt"), "later\n", "utf8");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: CommandId.makeUnsafe("cmd-missing-baseline-diff"),
+        threadId,
+        turnId,
+        completedAt: createdAt,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+        status: "ready",
+        files: [{ path: "turn.txt", kind: "modified", additions: 1, deletions: 0 }],
+        checkpointTurnCount: 1,
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.makeUnsafe("cmd-missing-baseline-undo"),
+        threadId,
+        turnCount: 1,
+        scope: "files",
+        createdAt,
+      }),
+    );
+
+    const thread = await waitForThread(harness.engine, (entry) =>
+      entry.activities.some((activity) => activity.kind === "checkpoint.revert.failed"),
+    );
+    expect(thread.activities.some((activity) => activity.kind === "checkpoint.revert.failed")).toBe(
+      true,
+    );
+    expect(fs.readFileSync(path.join(harness.cwd, "turn.txt"), "utf8")).toBe("turn\n");
+    expect(fs.readFileSync(path.join(harness.cwd, "later.txt"), "utf8")).toBe("later\n");
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+  });
+
   it("keeps full thread revert behavior for explicit thread scope", async () => {
     const harness = await createHarness();
     const createdAt = new Date().toISOString();

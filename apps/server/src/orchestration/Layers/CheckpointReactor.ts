@@ -961,7 +961,6 @@ const make = Effect.gen(function* () {
         cwd: checkpointCwd,
         fromCheckpointRef,
         toCheckpointRef: targetCheckpoint.checkpointRef,
-        fallbackFromToHead: event.payload.turnCount === 1 && !hasTurnStartCheckpoint,
       });
       if (!reversed) {
         yield* appendRevertFailureActivity({
