@@ -500,6 +500,40 @@ describe("buildTurnDiffSummaryByAssistantMessageId", () => {
     expect(result.get(MessageId.makeUnsafe("a-final"))?.checkpointTurnCounts).toEqual([1, 2]);
   });
 
+  it("excludes no-change and placeholder mini-turns from merged Undo targets", () => {
+    const result = buildTurnDiffSummaryByAssistantMessageId({
+      turnDiffSummaries: [
+        makeSummary({ turnId: "turn-files", checkpointTurnCount: 1 }),
+        makeSummary({ turnId: "turn-no-files", checkpointTurnCount: 2, files: [] }),
+        makeSummary({
+          turnId: "turn-placeholder",
+          checkpointTurnCount: 3,
+          checkpointRef: CheckpointRef.makeUnsafe("provider-diff:event-3"),
+        }),
+      ],
+      messages: [
+        { id: MessageId.makeUnsafe("u-1"), role: "user", turnId: null },
+        {
+          id: MessageId.makeUnsafe("a-files"),
+          role: "assistant",
+          turnId: TurnId.makeUnsafe("turn-files"),
+        },
+        {
+          id: MessageId.makeUnsafe("a-no-files"),
+          role: "assistant",
+          turnId: TurnId.makeUnsafe("turn-no-files"),
+        },
+        {
+          id: MessageId.makeUnsafe("a-placeholder"),
+          role: "assistant",
+          turnId: TurnId.makeUnsafe("turn-placeholder"),
+        },
+      ],
+    });
+
+    expect(result.get(MessageId.makeUnsafe("a-placeholder"))?.checkpointTurnCounts).toEqual([]);
+  });
+
   it("keeps separate cards for response segments split by user messages", () => {
     const result = buildTurnDiffSummaryByAssistantMessageId({
       turnDiffSummaries: [makeSummary({ turnId: "turn-1" }), makeSummary({ turnId: "turn-2" })],

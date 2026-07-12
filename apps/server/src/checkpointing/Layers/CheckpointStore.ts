@@ -407,6 +407,13 @@ const makeCheckpointStore = Effect.gen(function* () {
               cwd: input.cwd,
               args: ["apply", "--reverse", "--whitespace=nowarn", "--", patchPath],
             });
+            if (input.affectedPaths.length > 0 && (yield* hasHeadCommit(input.cwd))) {
+              yield* git.execute({
+                operation,
+                cwd: input.cwd,
+                args: ["reset", "--quiet", "--", ...input.affectedPaths],
+              });
+            }
             return true;
           }),
         (tempDir) => fs.remove(tempDir, { recursive: true }),

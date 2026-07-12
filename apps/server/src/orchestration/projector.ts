@@ -920,11 +920,18 @@ export function projectEvent(
           (thread.latestTurn?.turnId === payload.turnId
             ? thread.latestTurn.assistantMessageId
             : null);
-        const latestTurn =
-          isProviderDiffPlaceholderRef(payload.checkpointRef) &&
-          payload.status === "missing" &&
-          thread.latestTurn?.turnId === payload.turnId &&
-          thread.latestTurn.state === "running"
+        const previousLatestCheckpointTurnCount = thread.checkpoints.find(
+          (entry) => entry.turnId === thread.latestTurn?.turnId,
+        )?.checkpointTurnCount;
+        const preservesNewerLatestTurn =
+          previousLatestCheckpointTurnCount !== undefined &&
+          previousLatestCheckpointTurnCount > payload.checkpointTurnCount;
+        const latestTurn = preservesNewerLatestTurn
+          ? thread.latestTurn
+          : isProviderDiffPlaceholderRef(payload.checkpointRef) &&
+              payload.status === "missing" &&
+              thread.latestTurn?.turnId === payload.turnId &&
+              thread.latestTurn.state === "running"
             ? thread.latestTurn
             : {
                 turnId: payload.turnId,

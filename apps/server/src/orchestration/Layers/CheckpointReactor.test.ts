@@ -1348,6 +1348,7 @@ describe("CheckpointReactor", () => {
       }),
     );
     fs.writeFileSync(path.join(harness.cwd, "one.txt"), "one\n", "utf8");
+    runGit(harness.cwd, ["add", "one.txt"]);
     await runtime!.runPromise(
       harness.checkpointStore.captureCheckpoint({
         cwd: harness.cwd,
@@ -1355,6 +1356,7 @@ describe("CheckpointReactor", () => {
       }),
     );
     fs.writeFileSync(path.join(harness.cwd, "two.txt"), "two\n", "utf8");
+    runGit(harness.cwd, ["add", "two.txt"]);
     await runtime!.runPromise(
       harness.checkpointStore.captureCheckpoint({
         cwd: harness.cwd,
@@ -1426,9 +1428,9 @@ describe("CheckpointReactor", () => {
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.checkpoint.revert",
-        commandId: CommandId.makeUnsafe("cmd-undo-files-turn-1"),
+        commandId: CommandId.makeUnsafe("cmd-undo-files-turn-2"),
         threadId,
-        turnCount: 1,
+        turnCount: 2,
         scope: "files",
         createdAt,
       }),
@@ -1438,16 +1440,16 @@ describe("CheckpointReactor", () => {
       (entry) => entry.id === threadId,
     );
     expect(afterFirstUndo?.activities).toEqual([]);
-    expect(afterFirstUndo?.checkpoints[0]?.files).toEqual([]);
-    expect(fs.existsSync(path.join(harness.cwd, "one.txt"))).toBe(false);
-    expect(fs.readFileSync(path.join(harness.cwd, "two.txt"), "utf8")).toBe("two\n");
+    expect(afterFirstUndo?.checkpoints[1]?.files).toEqual([]);
+    expect(fs.readFileSync(path.join(harness.cwd, "one.txt"), "utf8")).toBe("one\n");
+    expect(fs.existsSync(path.join(harness.cwd, "two.txt"))).toBe(false);
 
     await Effect.runPromise(
       harness.engine.dispatch({
         type: "thread.checkpoint.revert",
-        commandId: CommandId.makeUnsafe("cmd-undo-files-turn-2"),
+        commandId: CommandId.makeUnsafe("cmd-undo-files-turn-1"),
         threadId,
-        turnCount: 2,
+        turnCount: 1,
         scope: "files",
         createdAt,
       }),
@@ -1457,6 +1459,7 @@ describe("CheckpointReactor", () => {
     const readModel = await Effect.runPromise(harness.engine.getReadModel());
     const thread = readModel.threads.find((entry) => entry.id === threadId);
     expect(thread?.checkpoints.every((checkpoint) => checkpoint.files.length === 0)).toBe(true);
+    expect(thread?.latestTurn?.turnId).toBe(turnTwoId);
     expect(thread?.messages.map((message) => message.text)).toEqual([
       "Change two files",
       "Changed them",
@@ -1466,12 +1469,33 @@ describe("CheckpointReactor", () => {
     expect(fs.existsSync(path.join(harness.cwd, "two.txt"))).toBe(false);
     expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1))).toBe(true);
     expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
+    expect(runGit(harness.cwd, ["rev-parse", checkpointRefForThreadTurn(threadId, 1)]).trim()).toBe(
+      runGit(harness.cwd, ["rev-parse", checkpointRefForThreadTurn(threadId, 2)]).trim(),
+    );
+    expect(runGit(harness.cwd, ["diff", "--cached", "--name-only"]).trim()).toBe("");
     const events = await Effect.runPromise(
       Stream.runCollect(harness.engine.readEvents(0)).pipe(
         Effect.map((chunk) => Array.from(chunk)),
       ),
     );
     expect(events.some((event) => event.type === "thread.reverted")).toBe(false);
+
+    fs.writeFileSync(path.join(harness.cwd, "later.txt"), "later\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.makeUnsafe("cmd-full-revert-after-files-undo"),
+        threadId,
+        turnCount: 1,
+        scope: "thread",
+        createdAt,
+      }),
+    );
+    await harness.drain();
+    expect(fs.existsSync(path.join(harness.cwd, "one.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(harness.cwd, "two.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(harness.cwd, "later.txt"))).toBe(false);
+    expect(harness.provider.rollbackConversation).toHaveBeenCalledTimes(1);
   });
 
   it("keeps full thread revert behavior for explicit thread scope", async () => {

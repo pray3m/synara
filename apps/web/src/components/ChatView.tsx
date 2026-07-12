@@ -3045,9 +3045,6 @@ export default function ChatView({
         ...summary,
         checkpointTurnCount:
           summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId],
-        checkpointTurnCounts: [
-          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId],
-        ].filter((turnCount): turnCount is number => typeof turnCount === "number"),
       })),
       messages: messagesForDiffAnchoring,
     });

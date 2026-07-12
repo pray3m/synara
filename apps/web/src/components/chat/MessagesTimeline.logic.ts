@@ -225,27 +225,42 @@ function mergeTurnDiffSummaries(
   existing: TurnDiffSummary | undefined,
   next: TurnDiffSummary,
 ): TurnDiffSummary {
-  if (!existing) return next;
+  const checkpointTurnCountsFor = (summary: TurnDiffSummary): number[] => {
+    if (
+      summary.files.length === 0 ||
+      summary.checkpointRef === undefined ||
+      summary.checkpointRef.startsWith("provider-diff:")
+    ) {
+      return [];
+    }
+    return (
+      summary.checkpointTurnCounts ??
+      (summary.checkpointTurnCount === undefined ? [] : [summary.checkpointTurnCount])
+    );
+  };
+  if (!existing) {
+    const checkpointTurnCounts = checkpointTurnCountsFor(next);
+    return { ...next, checkpointTurnCounts };
+  }
 
   const filesByPath = new Map(existing.files.map((file) => [file.path, file]));
   for (const file of next.files) {
     filesByPath.set(file.path, file);
   }
   const checkpointTurnCounts = new Set([
-    ...(existing.checkpointTurnCounts ??
-      (existing.checkpointTurnCount === undefined ? [] : [existing.checkpointTurnCount])),
-    ...(next.checkpointTurnCounts ??
-      (next.checkpointTurnCount === undefined ? [] : [next.checkpointTurnCount])),
+    ...checkpointTurnCountsFor(existing),
+    ...checkpointTurnCountsFor(next),
   ]);
+  const allDisplayedFilesUndoable = [existing, next].every(
+    (summary) => summary.files.length === 0 || checkpointTurnCountsFor(summary).length > 0,
+  );
 
   return {
     ...next,
     files: [...filesByPath.values()],
-    ...(checkpointTurnCounts.size === 0
-      ? {}
-      : {
-          checkpointTurnCounts: [...checkpointTurnCounts].toSorted((left, right) => left - right),
-        }),
+    checkpointTurnCounts: allDisplayedFilesUndoable
+      ? [...checkpointTurnCounts].toSorted((left, right) => left - right)
+      : [],
   };
 }
 

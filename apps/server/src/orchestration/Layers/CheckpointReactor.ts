@@ -902,6 +902,20 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.catch(() => Effect.void));
         return;
       }
+      const latestUndoableTurnCount = thread.checkpoints.reduce(
+        (latest, checkpoint) =>
+          checkpoint.files.length > 0 ? Math.max(latest, checkpoint.checkpointTurnCount) : latest,
+        0,
+      );
+      if (targetCheckpoint.checkpointTurnCount !== latestUndoableTurnCount) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: "Undo newer file changes before undoing this turn.",
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
 
       const turnStartCheckpointRef =
         checkpointRefForThreadTurnStartInManagedFamily(
@@ -941,6 +955,7 @@ const make = Effect.gen(function* () {
         cwd: sessionRuntime.value.cwd,
         fromCheckpointRef,
         toCheckpointRef: targetCheckpoint.checkpointRef,
+        affectedPaths: targetCheckpoint.files.map((file) => file.path),
         fallbackFromToHead: event.payload.turnCount === 1 && !hasTurnStartCheckpoint,
       });
       if (!reversed) {
@@ -952,6 +967,23 @@ const make = Effect.gen(function* () {
         }).pipe(Effect.catch(() => Effect.void));
         return;
       }
+
+      yield* checkpointStore.captureCheckpoint({
+        cwd: sessionRuntime.value.cwd,
+        checkpointRef: targetCheckpoint.checkpointRef,
+      });
+      yield* Effect.forEach(
+        thread.checkpoints.filter(
+          (checkpoint) => checkpoint.checkpointTurnCount > targetCheckpoint.checkpointTurnCount,
+        ),
+        (checkpoint) =>
+          checkpointStore.copyCheckpointRef({
+            cwd: sessionRuntime.value.cwd,
+            fromCheckpointRef: targetCheckpoint.checkpointRef,
+            toCheckpointRef: checkpoint.checkpointRef,
+          }),
+        { discard: true },
+      );
 
       clearWorkspaceIndexCache(sessionRuntime.value.cwd);
       yield* orchestrationEngine.dispatch({
