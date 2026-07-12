@@ -3774,11 +3774,24 @@ export const useComposerDraftStore = create<ComposerDraftStoreState>()(
               // Explicit options provided → use them
               nextMap[normalized.provider] = normalized;
             } else {
-              // No options in selection → preserve existing options, update provider+model
+              // Runtime-discovered Codex efforts are model-scoped. When the model changes
+              // without an explicit option selection, keep provider-wide options but drop
+              // the effort instead of carrying a value the target model may not support.
+              let preservedOptions = current?.options;
+              if (
+                normalized.provider === "codex" &&
+                current?.provider === "codex" &&
+                current.model !== normalized.model &&
+                current.options?.reasoningEffort !== undefined
+              ) {
+                const { reasoningEffort: _reasoningEffort, ...remainingOptions } = current.options;
+                preservedOptions =
+                  Object.keys(remainingOptions).length > 0 ? remainingOptions : undefined;
+              }
               nextMap[normalized.provider] = makeModelSelection(
                 normalized.provider,
                 normalized.model,
-                current?.options,
+                preservedOptions,
               );
             }
           }

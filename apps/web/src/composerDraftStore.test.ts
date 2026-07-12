@@ -2191,6 +2191,42 @@ describe("composerDraftStore setModelSelection", () => {
       useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
     ).toEqual(modelSelection("codex", "gpt-5.3-codex"));
   });
+
+  it("drops a runtime Codex effort when switching models before terminal promotion", () => {
+    const store = useComposerDraftStore.getState();
+    store.setModelSelection(
+      threadId,
+      modelSelection("codex", "gpt-5.6-sol", {
+        reasoningEffort: "ultra",
+        fastMode: true,
+      }),
+    );
+
+    store.setModelSelection(threadId, modelSelection("codex", "gpt-5.4"));
+
+    const draft = useComposerDraftStore.getState().draftsByThreadId[threadId];
+    const expectedSelection = modelSelection("codex", "gpt-5.4", { fastMode: true });
+    expect(draft?.modelSelectionByProvider.codex).toEqual(expectedSelection);
+    expect(
+      resolvePreferredComposerModelSelection({
+        draft,
+        threadModelSelection: null,
+        projectModelSelection: null,
+      }),
+    ).toEqual(expectedSelection);
+  });
+
+  it("retains a runtime Codex effort when reselecting the same model", () => {
+    const store = useComposerDraftStore.getState();
+    const selection = modelSelection("codex", "gpt-5.6-sol", { reasoningEffort: "max" });
+    store.setModelSelection(threadId, selection);
+
+    store.setModelSelection(threadId, modelSelection("codex", "gpt-5.6-sol"));
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
+    ).toEqual(selection);
+  });
 });
 
 describe("composerDraftStore sticky composer settings", () => {
