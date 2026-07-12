@@ -1155,6 +1155,35 @@ describe("composerDraftStore terminal contexts", () => {
       modelSelection("grok", "grok-build"),
     );
   });
+
+  it("trims a runtime-discovered Codex effort from legacy draft storage", () => {
+    const persistApi = useComposerDraftStore.persist as unknown as {
+      getOptions: () => {
+        merge: (
+          persistedState: unknown,
+          currentState: ReturnType<typeof useComposerDraftStore.getState>,
+        ) => ReturnType<typeof useComposerDraftStore.getState>;
+      };
+    };
+    const mergedState = persistApi.getOptions().merge(
+      {
+        draftsByThreadId: {
+          [threadId]: {
+            provider: "codex",
+            model: "gpt-5.6-sol",
+            effort: "  ultra  ",
+          },
+        },
+        draftThreadsByThreadId: {},
+        projectDraftThreadIdByProjectId: {},
+      },
+      useComposerDraftStore.getInitialState(),
+    );
+
+    expect(mergedState.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(
+      modelSelection("codex", "gpt-5.6-sol", { reasoningEffort: "ultra" }),
+    );
+  });
 });
 
 describe("composerDraftStore project draft thread mapping", () => {
@@ -1586,6 +1615,36 @@ describe("composerDraftStore modelSelection", () => {
         fastMode: true,
       }),
     );
+  });
+
+  it.each(["max", "ultra"])(
+    "retains runtime-discovered Codex %s effort in thread and sticky selections",
+    (reasoningEffort) => {
+      const store = useComposerDraftStore.getState();
+      const selection = modelSelection("codex", "gpt-5.6-sol", { reasoningEffort });
+
+      store.setModelSelection(threadId, selection);
+      store.setStickyModelSelection(selection);
+
+      const state = useComposerDraftStore.getState();
+      expect(state.draftsByThreadId[threadId]?.modelSelectionByProvider.codex).toEqual(selection);
+      expect(state.stickyModelSelectionByProvider.codex).toEqual(selection);
+    },
+  );
+
+  it("drops malformed Codex reasoning efforts while preserving other options", () => {
+    const store = useComposerDraftStore.getState();
+
+    store.setProviderModelOptions(
+      threadId,
+      "codex",
+      { reasoningEffort: "   ", fastMode: true },
+      { model: "gpt-5.6-sol" },
+    );
+
+    expect(
+      useComposerDraftStore.getState().draftsByThreadId[threadId]?.modelSelectionByProvider.codex,
+    ).toEqual(modelSelection("codex", "gpt-5.6-sol", { fastMode: true }));
   });
 
   it("keeps default-only model selections on the draft", () => {
