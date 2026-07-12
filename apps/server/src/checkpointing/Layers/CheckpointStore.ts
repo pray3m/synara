@@ -363,6 +363,66 @@ const makeCheckpointStore = Effect.gen(function* () {
       return result.stdout;
     });
 
+  const reverseCheckpointDiff: CheckpointStoreShape["reverseCheckpointDiff"] = (input) =>
+    Effect.gen(function* () {
+      const operation = "CheckpointStore.reverseCheckpointDiff";
+      let fromCommitOid = yield* resolveCheckpointCommit(input.cwd, input.fromCheckpointRef);
+      const toCommitOid = yield* resolveCheckpointCommit(input.cwd, input.toCheckpointRef);
+
+      if (!fromCommitOid && input.fallbackFromToHead === true) {
+        fromCommitOid = yield* resolveHeadCommit(input.cwd);
+      }
+      if (!fromCommitOid || !toCommitOid) {
+        return false;
+      }
+
+      const diff = yield* git.execute({
+        operation,
+        cwd: input.cwd,
+        args: [
+          "diff",
+          "--patch",
+          "--binary",
+          "--full-index",
+          "--no-color",
+          "--no-ext-diff",
+          "--no-textconv",
+          fromCommitOid,
+          toCommitOid,
+        ],
+        maxOutputBytes: input.maxOutputBytes ?? CHECKPOINT_DIFF_MAX_OUTPUT_BYTES,
+      });
+      if (diff.stdout.length === 0) {
+        return true;
+      }
+
+      return yield* Effect.acquireUseRelease(
+        fs.makeTempDirectory({ prefix: "synara-checkpoint-undo-" }),
+        (tempDir) =>
+          Effect.gen(function* () {
+            const patchPath = path.join(tempDir, "turn.patch");
+            yield* fs.writeFileString(patchPath, diff.stdout);
+            yield* git.execute({
+              operation,
+              cwd: input.cwd,
+              args: ["apply", "--reverse", "--whitespace=nowarn", "--", patchPath],
+            });
+            return true;
+          }),
+        (tempDir) => fs.remove(tempDir, { recursive: true }),
+      ).pipe(
+        Effect.catchTag("PlatformError", (error) =>
+          Effect.fail(
+            new CheckpointInvariantError({
+              operation,
+              detail: "Failed to prepare the checkpoint patch for undo.",
+              cause: error,
+            }),
+          ),
+        ),
+      );
+    });
+
   const deleteCheckpointRefs: CheckpointStoreShape["deleteCheckpointRefs"] = (input) =>
     Effect.gen(function* () {
       const operation = "CheckpointStore.deleteCheckpointRefs";
@@ -387,6 +447,7 @@ const makeCheckpointStore = Effect.gen(function* () {
     hasCheckpointRef,
     restoreCheckpoint,
     diffCheckpoints,
+    reverseCheckpointDiff,
     deleteCheckpointRefs,
   } satisfies CheckpointStoreShape;
 });

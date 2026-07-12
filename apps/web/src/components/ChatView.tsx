@@ -3041,10 +3041,14 @@ export default function ChatView({
       });
     }
     return buildTurnDiffSummaryByAssistantMessageId({
-      turnDiffSummaries,
+      turnDiffSummaries: turnDiffSummaries.map((summary) => ({
+        ...summary,
+        checkpointTurnCount:
+          summary.checkpointTurnCount ?? inferredCheckpointTurnCountByTurnId[summary.turnId],
+      })),
       messages: messagesForDiffAnchoring,
     });
-  }, [turnDiffSummaries, timelineMessages]);
+  }, [inferredCheckpointTurnCountByTurnId, turnDiffSummaries, timelineMessages]);
   const revertTurnCountByUserMessageId = useMemo(() => {
     const byUserMessageId = new Map<MessageId, number>();
     for (let index = 0; index < timelineEntries.length; index += 1) {
@@ -6255,12 +6259,53 @@ export default function ChatView({
           commandId: newCommandId(),
           threadId: activeThread.id,
           turnCount,
+          scope: "thread",
           createdAt: new Date().toISOString(),
         });
       } catch (err) {
         setThreadError(
           activeThread.id,
           err instanceof Error ? err.message : "Failed to revert thread state.",
+        );
+      }
+      setIsRevertingCheckpoint(false);
+    },
+    [activeThread, hasLiveTurn, isConnecting, isRevertingCheckpoint, isSendBusy, setThreadError],
+  );
+
+  const onUndoTurnFiles = useCallback(
+    async (turnCount: number) => {
+      const api = readNativeApi();
+      if (!api || !activeThread || isRevertingCheckpoint) return;
+
+      if (hasLiveTurn || isSendBusy || isConnecting) {
+        setThreadError(activeThread.id, "Interrupt the current turn before undoing file changes.");
+        return;
+      }
+      const confirmed = await api.dialogs.confirm(
+        [
+          `Undo file changes from turn ${turnCount}?`,
+          "Messages and provider conversation history will be kept.",
+          "This action cannot be undone.",
+        ].join("\n"),
+      );
+      if (!confirmed) return;
+
+      setIsRevertingCheckpoint(true);
+      setThreadError(activeThread.id, null);
+      try {
+        await api.orchestration.dispatchCommand({
+          type: "thread.checkpoint.revert",
+          commandId: newCommandId(),
+          threadId: activeThread.id,
+          turnCount,
+          scope: "files",
+          createdAt: new Date().toISOString(),
+        });
+      } catch (err) {
+        setThreadError(
+          activeThread.id,
+          err instanceof Error ? err.message : "Failed to undo file changes.",
         );
       }
       setIsRevertingCheckpoint(false);
@@ -10923,6 +10968,7 @@ export default function ChatView({
                     onOpenAutomation={onOpenAutomation}
                     revertTurnCountByUserMessageId={revertTurnCountByUserMessageId}
                     onRevertUserMessage={onRevertUserMessage}
+                    onUndoTurnFiles={onUndoTurnFiles}
                     onEditUserMessage={onEditUserMessage}
                     isRevertingCheckpoint={isRevertingCheckpoint}
                     onExpandTimelineImage={onExpandTimelineImage}

@@ -357,6 +357,7 @@ describe("CheckpointReactor", () => {
     return {
       engine,
       provider,
+      checkpointStore,
       cwd,
       drain,
     };
@@ -1330,7 +1331,150 @@ describe("CheckpointReactor", () => {
     ).toBe(true);
   });
 
-  it("executes provider revert and emits thread.reverted for checkpoint revert requests", async () => {
+  it("undoes turn files without trimming chat or rolling back the Claude conversation", async () => {
+    const harness = await createHarness({
+      seedFilesystemCheckpoints: false,
+      providerName: "claudeAgent",
+    });
+    const createdAt = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const turnOneId = asTurnId("turn-files-1");
+    const turnTwoId = asTurnId("turn-files-2");
+
+    await runtime!.runPromise(
+      harness.checkpointStore.captureCheckpoint({
+        cwd: harness.cwd,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 0),
+      }),
+    );
+    fs.writeFileSync(path.join(harness.cwd, "one.txt"), "one\n", "utf8");
+    await runtime!.runPromise(
+      harness.checkpointStore.captureCheckpoint({
+        cwd: harness.cwd,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 1),
+      }),
+    );
+    fs.writeFileSync(path.join(harness.cwd, "two.txt"), "two\n", "utf8");
+    await runtime!.runPromise(
+      harness.checkpointStore.captureCheckpoint({
+        cwd: harness.cwd,
+        checkpointRef: checkpointRefForThreadTurn(threadId, 2),
+      }),
+    );
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.messages.import",
+        commandId: CommandId.makeUnsafe("cmd-import-files-undo-chat"),
+        threadId,
+        messages: [
+          {
+            messageId: MessageId.makeUnsafe("message-files-undo-user"),
+            role: "user",
+            text: "Change two files",
+            createdAt,
+            updatedAt: createdAt,
+          },
+          {
+            messageId: MessageId.makeUnsafe("message-files-undo-assistant"),
+            role: "assistant",
+            text: "Changed them",
+            createdAt,
+            updatedAt: createdAt,
+          },
+        ],
+        createdAt,
+      }),
+    );
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-session-set-files-undo"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    for (const [turnCount, turnId, filePath] of [
+      [1, turnOneId, "one.txt"],
+      [2, turnTwoId, "two.txt"],
+    ] as const) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe(`cmd-files-undo-diff-${turnCount}`),
+          threadId,
+          turnId,
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, turnCount),
+          status: "ready",
+          files: [{ path: filePath, kind: "modified", additions: 1, deletions: 0 }],
+          checkpointTurnCount: turnCount,
+          createdAt,
+        }),
+      );
+    }
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.makeUnsafe("cmd-undo-files-turn-1"),
+        threadId,
+        turnCount: 1,
+        scope: "files",
+        createdAt,
+      }),
+    );
+    await harness.drain();
+    const afterFirstUndo = (await Effect.runPromise(harness.engine.getReadModel())).threads.find(
+      (entry) => entry.id === threadId,
+    );
+    expect(afterFirstUndo?.activities).toEqual([]);
+    expect(afterFirstUndo?.checkpoints[0]?.files).toEqual([]);
+    expect(fs.existsSync(path.join(harness.cwd, "one.txt"))).toBe(false);
+    expect(fs.readFileSync(path.join(harness.cwd, "two.txt"), "utf8")).toBe("two\n");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.revert",
+        commandId: CommandId.makeUnsafe("cmd-undo-files-turn-2"),
+        threadId,
+        turnCount: 2,
+        scope: "files",
+        createdAt,
+      }),
+    );
+    await harness.drain();
+
+    const readModel = await Effect.runPromise(harness.engine.getReadModel());
+    const thread = readModel.threads.find((entry) => entry.id === threadId);
+    expect(thread?.checkpoints.every((checkpoint) => checkpoint.files.length === 0)).toBe(true);
+    expect(thread?.messages.map((message) => message.text)).toEqual([
+      "Change two files",
+      "Changed them",
+    ]);
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    expect(fs.existsSync(path.join(harness.cwd, "one.txt"))).toBe(false);
+    expect(fs.existsSync(path.join(harness.cwd, "two.txt"))).toBe(false);
+    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 1))).toBe(true);
+    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    expect(events.some((event) => event.type === "thread.reverted")).toBe(false);
+  });
+
+  it("keeps full thread revert behavior for explicit thread scope", async () => {
     const harness = await createHarness();
     const createdAt = new Date().toISOString();
 
@@ -1387,6 +1531,7 @@ describe("CheckpointReactor", () => {
         commandId: CommandId.makeUnsafe("cmd-revert-request"),
         threadId: ThreadId.makeUnsafe("thread-1"),
         turnCount: 1,
+        scope: "thread",
         createdAt,
       }),
     );
@@ -1529,6 +1674,7 @@ describe("CheckpointReactor", () => {
         commandId: CommandId.makeUnsafe("cmd-revert-request-claude"),
         threadId: ThreadId.makeUnsafe("thread-1"),
         turnCount: 1,
+        scope: "thread",
         createdAt,
       }),
     );

@@ -1145,6 +1145,7 @@ const ThreadCheckpointRevertCommand = Schema.Struct({
   commandId: CommandId,
   threadId: ThreadId,
   turnCount: NonNegativeInt,
+  scope: Schema.optional(Schema.Literals(["thread", "files"])),
   createdAt: IsoDateTime,
 });
 
@@ -1636,6 +1637,9 @@ const ThreadUserInputResponseRequestedPayload = Schema.Struct({
 export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
+  scope: Schema.optional(Schema.Literals(["thread", "files"])).pipe(
+    Schema.withDecodingDefault(() => "thread"),
+  ),
   createdAt: IsoDateTime,
 });
 

@@ -21,6 +21,7 @@ import {
   checkpointRefForThreadTurnInManagedFamily,
   checkpointRefForThreadTurnLive,
   checkpointRefForThreadTurnStart,
+  checkpointRefForThreadTurnStartInManagedFamily,
   resolveThreadWorkspaceCwd,
 } from "../../checkpointing/Utils.ts";
 import { clearWorkspaceIndexCache } from "../../workspaceEntries.ts";
@@ -885,6 +886,89 @@ const make = Effect.gen(function* () {
         detail: `Checkpoint turn count ${event.payload.turnCount} exceeds current turn count ${currentTurnCount}.`,
         createdAt: now,
       }).pipe(Effect.catch(() => Effect.void));
+      return;
+    }
+
+    if (event.payload.scope === "files") {
+      const targetCheckpoint = thread.checkpoints.find(
+        (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount,
+      );
+      if (!targetCheckpoint || targetCheckpoint.files.length === 0) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: `File changes for turn ${event.payload.turnCount} are unavailable or already undone.`,
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
+
+      const turnStartCheckpointRef =
+        checkpointRefForThreadTurnStartInManagedFamily(
+          targetCheckpoint.checkpointRef,
+          event.payload.threadId,
+          targetCheckpoint.turnId,
+        ) ?? checkpointRefForThreadTurnStart(event.payload.threadId, targetCheckpoint.turnId);
+      const hasTurnStartCheckpoint = yield* checkpointStore.hasCheckpointRef({
+        cwd: sessionRuntime.value.cwd,
+        checkpointRef: turnStartCheckpointRef,
+      });
+      const previousCheckpointRef =
+        event.payload.turnCount === 1
+          ? (checkpointRefForThreadTurnInManagedFamily(
+              targetCheckpoint.checkpointRef,
+              event.payload.threadId,
+              0,
+            ) ?? checkpointRefForThreadTurn(event.payload.threadId, 0))
+          : thread.checkpoints.find(
+              (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount - 1,
+            )?.checkpointRef;
+      const fromCheckpointRef = hasTurnStartCheckpoint
+        ? turnStartCheckpointRef
+        : previousCheckpointRef;
+
+      if (!fromCheckpointRef) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: `Starting checkpoint for turn ${event.payload.turnCount} is unavailable.`,
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
+
+      const reversed = yield* checkpointStore.reverseCheckpointDiff({
+        cwd: sessionRuntime.value.cwd,
+        fromCheckpointRef,
+        toCheckpointRef: targetCheckpoint.checkpointRef,
+        fallbackFromToHead: event.payload.turnCount === 1 && !hasTurnStartCheckpoint,
+      });
+      if (!reversed) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: `Filesystem checkpoints for turn ${event.payload.turnCount} are unavailable.`,
+          createdAt: now,
+        }).pipe(Effect.catch(() => Effect.void));
+        return;
+      }
+
+      clearWorkspaceIndexCache(sessionRuntime.value.cwd);
+      yield* orchestrationEngine.dispatch({
+        type: "thread.turn.diff.complete",
+        commandId: serverCommandId("checkpoint-files-undone"),
+        threadId: event.payload.threadId,
+        turnId: targetCheckpoint.turnId,
+        completedAt: targetCheckpoint.completedAt,
+        checkpointRef: targetCheckpoint.checkpointRef,
+        status: targetCheckpoint.status,
+        files: [],
+        ...(targetCheckpoint.assistantMessageId
+          ? { assistantMessageId: targetCheckpoint.assistantMessageId }
+          : {}),
+        checkpointTurnCount: targetCheckpoint.checkpointTurnCount,
+        createdAt: now,
+      });
       return;
     }
 
