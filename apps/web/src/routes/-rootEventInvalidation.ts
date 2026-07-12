@@ -15,6 +15,7 @@ import { getThreadFromState } from "../threadDerivation";
 
 const FILE_CHANGE_EVENT_TYPES = new Set<OrchestrationEvent["type"]>([
   "thread.turn-diff-completed",
+  "thread.checkpoint-files-restored",
   "thread.reverted",
   "thread.conversation-rolled-back",
 ]);

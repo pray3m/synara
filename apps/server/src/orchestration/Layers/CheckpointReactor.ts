@@ -838,7 +838,12 @@ const make = Effect.gen(function* () {
   });
 
   const handleRevertRequested = Effect.fnUntraced(function* (
-    event: Extract<OrchestrationEvent, { type: "thread.checkpoint-revert-requested" }>,
+    event: Extract<
+      OrchestrationEvent,
+      {
+        type: "thread.checkpoint-revert-requested" | "thread.checkpoint-files-restore-requested";
+      }
+    >,
   ) {
     const now = new Date().toISOString();
 
@@ -898,8 +903,10 @@ const make = Effect.gen(function* () {
         ),
       )
       .find((checkpointRef) => checkpointRef !== null);
-    const targetCheckpointRef =
-      event.payload.turnCount === 0
+    const filesOnly = event.type === "thread.checkpoint-files-restore-requested";
+    const targetCheckpointRef = filesOnly
+      ? checkpointRefForThreadMessageStart(event.payload.threadId, event.payload.messageId)
+      : event.payload.turnCount === 0
         ? (earliestManagedBaselineRef ?? checkpointRefForThreadTurn(event.payload.threadId, 0))
         : thread.checkpoints.find(
             (checkpoint) => checkpoint.checkpointTurnCount === event.payload.turnCount,
@@ -918,7 +925,7 @@ const make = Effect.gen(function* () {
     const restored = yield* checkpointStore.restoreCheckpoint({
       cwd: sessionRuntime.value.cwd,
       checkpointRef: targetCheckpointRef,
-      fallbackToHead: event.payload.turnCount === 0,
+      fallbackToHead: !filesOnly && event.payload.turnCount === 0,
     });
     if (!restored) {
       yield* appendRevertFailureActivity({
@@ -933,6 +940,30 @@ const make = Effect.gen(function* () {
     // Invalidate the workspace entry cache so the @-mention file picker
     // reflects the reverted filesystem state.
     clearWorkspaceIndexCache(sessionRuntime.value.cwd);
+
+    // The diff-card action restores the immutable baseline captured for that
+    // exact user message. This remains correct after earlier file-only undos.
+    if (filesOnly) {
+      if (event.commandId === null) {
+        yield* appendRevertFailureActivity({
+          threadId: event.payload.threadId,
+          turnCount: event.payload.turnCount,
+          detail: "File restore request is missing its command id.",
+          createdAt: now,
+        });
+        return;
+      }
+      yield* orchestrationEngine.dispatch({
+        type: "thread.checkpoint.files.restore.complete",
+        commandId: serverCommandId("checkpoint-files-restore-complete"),
+        requestCommandId: event.commandId,
+        threadId: event.payload.threadId,
+        messageId: event.payload.messageId,
+        turnCount: event.payload.turnCount,
+        createdAt: now,
+      });
+      return;
+    }
 
     const rolledBackTurns = Math.max(0, currentTurnCount - event.payload.turnCount);
     if (rolledBackTurns > 0) {
@@ -980,7 +1011,10 @@ const make = Effect.gen(function* () {
       return;
     }
 
-    if (event.type === "thread.checkpoint-revert-requested") {
+    if (
+      event.type === "thread.checkpoint-revert-requested" ||
+      event.type === "thread.checkpoint-files-restore-requested"
+    ) {
       yield* handleRevertRequested(event).pipe(
         Effect.catch((error) =>
           appendRevertFailureActivity({
@@ -1054,6 +1088,17 @@ const make = Effect.gen(function* () {
     );
 
   const worker = yield* makeDrainableWorker(processInputSafely);
+  const observedFileRestoreRequestIds = new Set<string>();
+
+  const enqueueDomainEvent = (event: OrchestrationEvent) => {
+    if (event.type === "thread.checkpoint-files-restore-requested") {
+      if (event.commandId === null || observedFileRestoreRequestIds.has(event.commandId)) {
+        return Effect.void;
+      }
+      observedFileRestoreRequestIds.add(event.commandId);
+    }
+    return worker.enqueue({ source: "domain" as const, event });
+  };
 
   const start: CheckpointReactorShape["start"] = Effect.gen(function* () {
     yield* Effect.forkScoped(
@@ -1062,12 +1107,35 @@ const make = Effect.gen(function* () {
           event.type !== "thread.turn-start-requested" &&
           event.type !== "thread.message-sent" &&
           event.type !== "thread.checkpoint-revert-requested" &&
+          event.type !== "thread.checkpoint-files-restore-requested" &&
           event.type !== "thread.turn-diff-completed"
         ) {
           return Effect.void;
         }
-        return worker.enqueue({ source: "domain", event });
+        return enqueueDomainEvent(event);
       }),
+    );
+
+    // Reconcile accepted file-restore commands that were persisted before a
+    // server crash but never reached their durable completion event. Restore
+    // is idempotent, including the ambiguous crash-after-git-before-complete case.
+    const persistedEvents = yield* Stream.runCollect(orchestrationEngine.readEvents(0)).pipe(
+      Effect.orDie,
+    );
+    const completedRequestIds = new Set(
+      Array.from(persistedEvents)
+        .filter((event) => event.type === "thread.checkpoint-files-restored")
+        .map((event) => event.payload.requestCommandId),
+    );
+    yield* Effect.forEach(
+      Array.from(persistedEvents),
+      (event) =>
+        event.type === "thread.checkpoint-files-restore-requested" &&
+        event.commandId !== null &&
+        !completedRequestIds.has(event.commandId)
+          ? enqueueDomainEvent(event)
+          : Effect.void,
+      { concurrency: 1, discard: true },
     );
 
     yield* Effect.forkScoped(

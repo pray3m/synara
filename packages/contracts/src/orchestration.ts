@@ -1148,6 +1148,15 @@ const ThreadCheckpointRevertCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadCheckpointFilesRestoreCommand = Schema.Struct({
+  type: Schema.Literal("thread.checkpoint.files.restore"),
+  commandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnCount: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
 const ThreadConversationRollbackCommand = Schema.Struct({
   type: Schema.Literal("thread.conversation.rollback"),
   commandId: CommandId,
@@ -1212,6 +1221,7 @@ const DispatchableClientOrchestrationCommand = Schema.Union([
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
+  ThreadCheckpointFilesRestoreCommand,
   ThreadMessageEditAndResendCommand,
   ThreadActivityAppendCommand,
   ThreadSessionStopCommand,
@@ -1245,6 +1255,7 @@ export const ClientOrchestrationCommand = Schema.Union([
   ThreadApprovalRespondCommand,
   ThreadUserInputRespondCommand,
   ThreadCheckpointRevertCommand,
+  ThreadCheckpointFilesRestoreCommand,
   ThreadMessageEditAndResendCommand,
   ThreadActivityAppendCommand,
   ThreadSessionStopCommand,
@@ -1316,6 +1327,16 @@ const ThreadRevertCompleteCommand = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+const ThreadCheckpointFilesRestoreCompleteCommand = Schema.Struct({
+  type: Schema.Literal("thread.checkpoint.files.restore.complete"),
+  commandId: CommandId,
+  requestCommandId: CommandId,
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnCount: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
 const ThreadConversationRollbackCompleteCommand = Schema.Struct({
   type: Schema.Literal("thread.conversation.rollback.complete"),
   commandId: CommandId,
@@ -1336,6 +1357,7 @@ const InternalOrchestrationCommand = Schema.Union([
   ThreadTurnDiffCompleteCommand,
   ThreadActivityAppendCommand,
   ThreadRevertCompleteCommand,
+  ThreadCheckpointFilesRestoreCompleteCommand,
   ThreadConversationRollbackCommand,
   ThreadConversationRollbackCompleteCommand,
   ThreadDispatchQueuedTurnCommand,
@@ -1375,6 +1397,8 @@ export const OrchestrationEventType = Schema.Literals([
   "thread.approval-response-requested",
   "thread.user-input-response-requested",
   "thread.checkpoint-revert-requested",
+  "thread.checkpoint-files-restore-requested",
+  "thread.checkpoint-files-restored",
   "thread.reverted",
   "thread.conversation-rollback-requested",
   "thread.conversation-rolled-back",
@@ -1639,6 +1663,20 @@ export const ThreadCheckpointRevertRequestedPayload = Schema.Struct({
   createdAt: IsoDateTime,
 });
 
+export const ThreadCheckpointFilesRestoreRequestedPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnCount: NonNegativeInt,
+  createdAt: IsoDateTime,
+});
+
+export const ThreadCheckpointFilesRestoredPayload = Schema.Struct({
+  threadId: ThreadId,
+  messageId: MessageId,
+  turnCount: NonNegativeInt,
+  requestCommandId: CommandId,
+});
+
 export const ThreadRevertedPayload = Schema.Struct({
   threadId: ThreadId,
   turnCount: NonNegativeInt,
@@ -1850,6 +1888,16 @@ export const OrchestrationEvent = Schema.Union([
     ...EventBaseFields,
     type: Schema.Literal("thread.checkpoint-revert-requested"),
     payload: ThreadCheckpointRevertRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.checkpoint-files-restore-requested"),
+    payload: ThreadCheckpointFilesRestoreRequestedPayload,
+  }),
+  Schema.Struct({
+    ...EventBaseFields,
+    type: Schema.Literal("thread.checkpoint-files-restored"),
+    payload: ThreadCheckpointFilesRestoredPayload,
   }),
   Schema.Struct({
     ...EventBaseFields,

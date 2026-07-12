@@ -406,7 +406,7 @@ interface MessagesTimelineProps {
   /** Open an automation's detail page from a "created automation" transcript card. */
   onOpenAutomation?: (automationId: string) => void;
   revertTurnCountByUserMessageId: Map<MessageId, number>;
-  onRevertUserMessage: (messageId: MessageId) => void;
+  onRevertUserMessage: (messageId: MessageId, scope?: "files") => void;
   onEditUserMessage?: (messageId: MessageId, text: string) => boolean | Promise<boolean>;
   activeTurnId?: TurnId | null;
   isRevertingCheckpoint: boolean;
@@ -1687,9 +1687,12 @@ export const MessagesTimeline = memo(function MessagesTimeline({
                               type="button"
                               className="flex items-center gap-1 text-muted-foreground transition-colors hover:text-foreground"
                               style={{ fontSize: chatTypographyStyle.fontSize }}
-                              onClick={() => onRevertUserMessage(correspondingUserMessageId)}
+                              aria-label="Undo file changes and keep chat history"
+                              onClick={() =>
+                                onRevertUserMessage(correspondingUserMessageId, "files")
+                              }
                             >
-                              Undo
+                              Undo files
                               <Undo2Icon className="size-3" />
                             </button>
                           )}

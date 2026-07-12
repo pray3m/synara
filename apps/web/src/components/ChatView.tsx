@@ -6228,20 +6228,27 @@ export default function ChatView({
   });
 
   const onRevertToTurnCount = useCallback(
-    async (turnCount: number) => {
+    async (turnCount: number, scope?: "files", messageId?: MessageId) => {
       const api = readNativeApi();
       if (!api || !activeThread || isRevertingCheckpoint) return;
+      if (scope === "files" && messageId === undefined) return;
 
       if (hasLiveTurn || isSendBusy || isConnecting) {
         setThreadError(activeThread.id, "Interrupt the current turn before reverting checkpoints.");
         return;
       }
       const confirmed = await api.dialogs.confirm(
-        [
-          `Revert this thread to checkpoint ${turnCount}?`,
-          "This will discard newer messages and turn diffs in this thread.",
-          "This action cannot be undone.",
-        ].join("\n"),
+        scope === "files"
+          ? [
+              "Undo these file changes?",
+              "Files will be restored to their state before this turn. Your chat history will stay.",
+              "This action cannot be undone.",
+            ].join("\n")
+          : [
+              `Revert this thread to checkpoint ${turnCount}?`,
+              "This will discard newer messages and turn diffs in this thread.",
+              "This action cannot be undone.",
+            ].join("\n"),
       );
       if (!confirmed) {
         return;
@@ -6249,20 +6256,59 @@ export default function ChatView({
 
       setIsRevertingCheckpoint(true);
       setThreadError(activeThread.id, null);
+      const commandId = newCommandId();
+      let stopWaitingForCompletion: (() => void) | undefined;
       try {
-        await api.orchestration.dispatchCommand({
-          type: "thread.checkpoint.revert",
-          commandId: newCommandId(),
-          threadId: activeThread.id,
-          turnCount,
-          createdAt: new Date().toISOString(),
-        });
+        const completion =
+          scope === "files"
+            ? new Promise<void>((resolve, reject) => {
+                const timeoutId = window.setTimeout(() => {
+                  unsubscribe();
+                  reject(new Error("Timed out waiting for file changes to be restored."));
+                }, 120_000);
+                const unsubscribe = api.orchestration.onDomainEvent((event) => {
+                  if (
+                    event.type !== "thread.checkpoint-files-restored" ||
+                    event.payload.requestCommandId !== commandId
+                  ) {
+                    return;
+                  }
+                  window.clearTimeout(timeoutId);
+                  unsubscribe();
+                  resolve();
+                });
+                stopWaitingForCompletion = () => {
+                  window.clearTimeout(timeoutId);
+                  unsubscribe();
+                };
+              })
+            : null;
+        await api.orchestration.dispatchCommand(
+          scope === "files"
+            ? {
+                type: "thread.checkpoint.files.restore",
+                commandId,
+                threadId: activeThread.id,
+                messageId: messageId!,
+                turnCount,
+                createdAt: new Date().toISOString(),
+              }
+            : {
+                type: "thread.checkpoint.revert",
+                commandId,
+                threadId: activeThread.id,
+                turnCount,
+                createdAt: new Date().toISOString(),
+              },
+        );
+        await completion;
       } catch (err) {
         setThreadError(
           activeThread.id,
           err instanceof Error ? err.message : "Failed to revert thread state.",
         );
       }
+      stopWaitingForCompletion?.();
       setIsRevertingCheckpoint(false);
     },
     [activeThread, hasLiveTurn, isConnecting, isRevertingCheckpoint, isSendBusy, setThreadError],
@@ -9807,12 +9853,12 @@ export default function ChatView({
     void closeTerminal(terminalState.activeTerminalId);
   }, [closeTerminal, terminalState.activeTerminalId]);
   const onRevertUserMessage = useCallback(
-    (messageId: MessageId) => {
+    (messageId: MessageId, scope?: "files") => {
       const targetTurnCount = revertTurnCountByUserMessageId.get(messageId);
       if (typeof targetTurnCount !== "number") {
         return;
       }
-      void onRevertToTurnCount(targetTurnCount);
+      void onRevertToTurnCount(targetTurnCount, scope, messageId);
     },
     [onRevertToTurnCount, revertTurnCountByUserMessageId],
   );

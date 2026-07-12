@@ -2435,6 +2435,7 @@ describe("MessagesTimeline", () => {
 
   it("anchors the changed-files summary at the end of a collapsed file-change turn", async () => {
     const { MessagesTimeline } = await import("./MessagesTimeline");
+    const userMessageId = MessageId.makeUnsafe("message-user-inline-multi-edit");
     const assistantMessageId = MessageId.makeUnsafe("message-assistant-inline-multi-edit");
     const markup = renderToStaticMarkup(
       <MessagesTimeline
@@ -2443,6 +2444,18 @@ describe("MessagesTimeline", () => {
         activeTurnInProgress={false}
         activeTurnStartedAt={null}
         timelineEntries={[
+          {
+            id: "entry-user-inline-multi-edit",
+            kind: "message",
+            createdAt: "2026-03-17T19:12:27.000Z",
+            message: {
+              id: userMessageId,
+              role: "user",
+              text: "edit both files",
+              createdAt: "2026-03-17T19:12:27.000Z",
+              streaming: false,
+            },
+          },
           {
             id: "entry-inline-multi-file-change",
             kind: "work",
@@ -2501,7 +2514,7 @@ describe("MessagesTimeline", () => {
         expandedWorkGroups={{}}
         onToggleWorkGroup={() => {}}
         onOpenTurnDiff={() => {}}
-        revertTurnCountByUserMessageId={new Map()}
+        revertTurnCountByUserMessageId={new Map([[userMessageId, 0]])}
         onRevertUserMessage={() => {}}
         isRevertingCheckpoint={false}
         onImageExpand={() => {}}
@@ -2521,6 +2534,8 @@ describe("MessagesTimeline", () => {
     expect(markup).toContain("+1");
     expect(markup).toContain("-1");
     expect(markup).toContain("+2");
+    expect(markup).toContain("Undo files");
+    expect(markup).toContain('aria-label="Undo file changes and keep chat history"');
     expect(markup).not.toContain(">apps/web/src/components/chat<");
   });
 

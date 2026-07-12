@@ -33,6 +33,12 @@ describe("root event invalidation", () => {
   });
 
   it("invalidates git queries when checkpoint changes can rewrite files", () => {
+    expect(shouldInvalidateGitQueriesForEvent(event("thread.checkpoint-files-restored"))).toBe(
+      true,
+    );
+    expect(shouldInvalidateProviderQueriesForEvent(event("thread.checkpoint-files-restored"))).toBe(
+      true,
+    );
     expect(shouldInvalidateGitQueriesForEvent(event("thread.reverted"))).toBe(true);
     expect(shouldInvalidateGitQueriesForEvent(event("thread.conversation-rolled-back"))).toBe(true);
   });

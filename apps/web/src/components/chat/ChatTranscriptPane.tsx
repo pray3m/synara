@@ -74,7 +74,7 @@ interface ChatTranscriptPaneProps {
   onOpenTurnDiff: (turnId: TurnId, filePath?: string) => void;
   onOpenThread: (threadId: ThreadId) => void;
   onOpenAutomation?: ComponentProps<typeof MessagesTimeline>["onOpenAutomation"];
-  onRevertUserMessage: (messageId: MessageId) => void;
+  onRevertUserMessage: (messageId: MessageId, scope?: "files") => void;
   onEditUserMessage?: (messageId: MessageId, text: string) => boolean | Promise<boolean>;
   onScrollToBottom: () => void;
   onToggleWorkGroup?: (groupId: string) => void;

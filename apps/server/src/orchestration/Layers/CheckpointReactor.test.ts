@@ -3,7 +3,12 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 
-import type { ProviderKind, ProviderRuntimeEvent, ProviderSession } from "@synara/contracts";
+import type {
+  OrchestrationEvent,
+  ProviderKind,
+  ProviderRuntimeEvent,
+  ProviderSession,
+} from "@synara/contracts";
 import {
   CheckpointRef,
   CommandId,
@@ -159,7 +164,7 @@ async function waitForThread(
 
 async function waitForEvent(
   engine: OrchestrationEngineShape,
-  predicate: (event: { type: string }) => boolean,
+  predicate: (event: OrchestrationEvent) => boolean,
   timeoutMs = 30_000,
 ) {
   const deadline = Date.now() + timeoutMs;
@@ -1406,6 +1411,107 @@ describe("CheckpointReactor", () => {
     expect(
       gitRefExists(harness.cwd, checkpointRefForThreadTurn(ThreadId.makeUnsafe("thread-1"), 2)),
     ).toBe(false);
+  });
+
+  it("restores files without trimming chat history for diff-card undo requests", async () => {
+    const harness = await createHarness();
+    const createdAt = new Date().toISOString();
+    const threadId = ThreadId.makeUnsafe("thread-1");
+    const firstMessageId = MessageId.makeUnsafe("message-files-only-1");
+    const secondMessageId = MessageId.makeUnsafe("message-files-only-2");
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.session.set",
+        commandId: CommandId.makeUnsafe("cmd-files-only-session-set"),
+        threadId,
+        session: {
+          threadId,
+          status: "ready",
+          providerName: "claudeAgent",
+          runtimeMode: "approval-required",
+          activeTurnId: null,
+          lastError: null,
+          updatedAt: createdAt,
+        },
+        createdAt,
+      }),
+    );
+    for (const checkpointTurnCount of [1, 2]) {
+      await Effect.runPromise(
+        harness.engine.dispatch({
+          type: "thread.turn.diff.complete",
+          commandId: CommandId.makeUnsafe(`cmd-files-only-diff-${checkpointTurnCount}`),
+          threadId,
+          turnId: asTurnId(`turn-${checkpointTurnCount}`),
+          completedAt: createdAt,
+          checkpointRef: checkpointRefForThreadTurn(threadId, checkpointTurnCount),
+          status: "ready",
+          files: [],
+          checkpointTurnCount,
+          createdAt,
+        }),
+      );
+    }
+
+    runGit(harness.cwd, [
+      "update-ref",
+      checkpointRefForThreadMessageStart(threadId, firstMessageId),
+      checkpointRefForThreadTurn(threadId, 0),
+    ]);
+
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.files.restore",
+        commandId: CommandId.makeUnsafe("cmd-files-only-revert"),
+        threadId,
+        messageId: firstMessageId,
+        turnCount: 0,
+        createdAt,
+      }),
+    );
+
+    await waitForEvent(
+      harness.engine,
+      (event) => event.type === "thread.checkpoint-files-restored",
+    );
+    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v1\n");
+
+    // A later card must restore the actual post-undo baseline, not numbered
+    // checkpoint 1 (which still contains the first turn's now-undone files).
+    runGit(harness.cwd, [
+      "update-ref",
+      checkpointRefForThreadMessageStart(threadId, secondMessageId),
+      "HEAD",
+    ]);
+    fs.writeFileSync(path.join(harness.cwd, "README.md"), "later turn\n", "utf8");
+    await Effect.runPromise(
+      harness.engine.dispatch({
+        type: "thread.checkpoint.files.restore",
+        commandId: CommandId.makeUnsafe("cmd-files-only-revert-2"),
+        threadId,
+        messageId: secondMessageId,
+        turnCount: 2,
+        createdAt,
+      }),
+    );
+    await waitForEvent(
+      harness.engine,
+      (event) =>
+        event.type === "thread.checkpoint-files-restored" &&
+        event.payload.messageId === secondMessageId,
+    );
+    expect(fs.readFileSync(path.join(harness.cwd, "README.md"), "utf8")).toBe("v1\n");
+    const thread = await waitForThread(harness.engine, (entry) => entry.checkpoints.length === 2);
+    expect(thread.checkpoints).toHaveLength(2);
+    expect(harness.provider.rollbackConversation).not.toHaveBeenCalled();
+    const events = await Effect.runPromise(
+      Stream.runCollect(harness.engine.readEvents(0)).pipe(
+        Effect.map((chunk) => Array.from(chunk)),
+      ),
+    );
+    expect(events.some((event) => event.type === "thread.reverted")).toBe(false);
+    expect(gitRefExists(harness.cwd, checkpointRefForThreadTurn(threadId, 2))).toBe(true);
   });
 
   it("restores turn zero from the persisted checkpoint family", async () => {

@@ -1352,6 +1352,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
       };
     }
 
+    case "thread.checkpoint.files.restore": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.checkpoint-files-restore-requested",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          turnCount: command.turnCount,
+          createdAt: command.createdAt,
+        },
+      };
+    }
+
     case "thread.conversation.rollback": {
       const thread = yield* requireThread({
         readModel,
@@ -1635,6 +1654,25 @@ export const decideOrchestrationCommand = Effect.fn("decideOrchestrationCommand"
         payload: {
           threadId: command.threadId,
           turnCount: command.turnCount,
+        },
+      };
+    }
+
+    case "thread.checkpoint.files.restore.complete": {
+      yield* requireThread({ readModel, command, threadId: command.threadId });
+      return {
+        ...withEventBase({
+          aggregateKind: "thread",
+          aggregateId: command.threadId,
+          occurredAt: command.createdAt,
+          commandId: command.commandId,
+        }),
+        type: "thread.checkpoint-files-restored",
+        payload: {
+          threadId: command.threadId,
+          messageId: command.messageId,
+          turnCount: command.turnCount,
+          requestCommandId: command.requestCommandId,
         },
       };
     }
