@@ -65,28 +65,28 @@ export function isWindowsBatchCommand(command: string): boolean {
   return WINDOWS_BATCH_EXTENSION_PATTERN.test(command);
 }
 
-function validateWindowsBatchToken(token: string, label: string): string {
+function quoteWindowsBatchToken(token: string, label: string): string {
   if (WINDOWS_BATCH_UNSAFE_TOKEN_PATTERN.test(token)) {
     throw new Error(
       `Cannot safely execute Windows batch ${label} containing cmd.exe control characters.`,
     );
   }
-  return token;
+  return `"${token.replaceAll('"', '^"')}"`;
 }
 
 export function buildWindowsBatchCommandArgs(
   command: string,
   args: ReadonlyArray<string>,
 ): string[] {
-  return [
-    "/d",
-    "/s",
-    "/v:off",
-    "/c",
+  // Keep cmd.exe's semantic command line together so quote-bearing arguments
+  // are encoded for cmd instead of independently escaped as C-runtime argv.
+  // The call prefix also keeps /s from stripping the executable's outer quotes.
+  const commandLine = [
     "call",
-    validateWindowsBatchToken(command, "command"),
-    ...args.map((arg) => validateWindowsBatchToken(arg, "argument")),
-  ];
+    quoteWindowsBatchToken(command, "command"),
+    ...args.map((arg) => quoteWindowsBatchToken(arg, "argument")),
+  ].join(" ");
+  return ["/d", "/s", "/v:off", "/c", commandLine];
 }
 
 function isPathLikeCommand(command: string): boolean {
