@@ -24,8 +24,7 @@ export function useTemporaryThreadLifecycle(activeThreadId: ThreadId | null): vo
   const clearTemporaryThread = useTemporaryThreadStore((store) => store.clearTemporaryThread);
   const initialDraftIsTemporary = useComposerDraftStore(
     (store) =>
-      activeThreadId !== null &&
-      store.draftThreadsByThreadId[activeThreadId]?.isTemporary === true,
+      activeThreadId !== null && store.draftThreadsByThreadId[activeThreadId]?.isTemporary === true,
   );
   const previousThreadStateRef = useRef<{
     threadId: ThreadId | null;

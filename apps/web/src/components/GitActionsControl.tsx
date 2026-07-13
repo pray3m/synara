@@ -658,7 +658,7 @@ export default function GitActionsControl({
       isDefaultBranchOverride,
       progressToastId,
       filePaths,
-    }: RunGitActionWithToastInput) => {
+    }: RunGitActionWithToastInput) {
       const actionStatus = statusOverride ?? gitStatusForActions;
       const actionBranch = actionStatus?.branch ?? null;
       const actionIsDefaultBranch =
@@ -939,13 +939,7 @@ export default function GitActionsControl({
       featureBranch: true,
       skipDefaultBranchPrompt: true,
     });
-  }, [
-    allSelected,
-    isCommitDialogOpen,
-    dialogCommitMessage,
-    runGitActionWithToast,
-    selectedFiles,
-  ]);
+  }, [allSelected, isCommitDialogOpen, dialogCommitMessage, runGitActionWithToast, selectedFiles]);
 
   const openCreateBranchDialog = useCallback(() => {
     setCreateBranchName(suggestedCreateBranchName);
